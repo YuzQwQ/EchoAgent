@@ -1,0 +1,30 @@
+# Python internals
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual Environment
+venv/
+.venv/
+env/
+.env/
+
+# Environment Variables (Privacy - Critical)
+.env
+
+# IDE settings
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Project Data (Privacy)
+conversation.json
+*.log
+
+# OS generated files
+.DS_Store
+Thumbs.db
