@@ -1,6 +1,6 @@
 import json
 import os
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from config import config
 
 class MemoryManager:
@@ -9,51 +9,92 @@ class MemoryManager:
         self._ensure_file_exists()
 
     def _ensure_file_exists(self):
-        """确保存储文件存在，如果不存在则创建一个空列表"""
+        """确保存储文件存在"""
         if not os.path.exists(self.file_path):
-            self.save_history([])
+            self.save_data({"summary": "", "messages": []})
 
-    def load_history(self) -> List[Dict[str, str]]:
-        """加载对话历史"""
+    def load_data(self) -> Dict[str, Any]:
+        """加载完整数据（包含 summary 和 messages）"""
         try:
             with open(self.file_path, 'r', encoding='utf-8') as f:
-                history = json.load(f)
-                if not isinstance(history, list):
-                    return []
-                return history
+                data = json.load(f)
+                
+                # 兼容旧版本：如果是 list，转换成 dict
+                if isinstance(data, list):
+                    return {"summary": "", "messages": data}
+                
+                # 确保字段存在
+                if "summary" not in data:
+                    data["summary"] = ""
+                if "messages" not in data:
+                    data["messages"] = []
+                    
+                return data
         except (json.JSONDecodeError, FileNotFoundError):
-            return []
+            return {"summary": "", "messages": []}
 
-    def save_history(self, history: List[Dict[str, str]]):
-        """保存对话历史"""
+    def save_data(self, data: Dict[str, Any]):
+        """保存完整数据"""
         try:
             with open(self.file_path, 'w', encoding='utf-8') as f:
-                json.dump(history, f, ensure_ascii=False, indent=2)
+                json.dump(data, f, ensure_ascii=False, indent=2)
         except Exception as e:
             print(f"Error saving history: {e}")
 
+    def load_history(self) -> List[Dict[str, str]]:
+        """获取消息列表（兼容旧接口）"""
+        data = self.load_data()
+        return data["messages"]
+    
+    def get_summary(self) -> str:
+        """获取当前摘要"""
+        data = self.load_data()
+        return data.get("summary", "")
+
+    def update_summary(self, new_summary: str):
+        """更新摘要"""
+        data = self.load_data()
+        data["summary"] = new_summary
+        self.save_data(data)
+
     def add_message(self, role: str, content: str):
-        """添加一条新消息到历史记录"""
-        history = self.load_history()
-        history.append({"role": role, "content": content})
+        """添加一条新消息"""
+        data = self.load_data()
+        data["messages"].append({"role": role, "content": content})
+        self.save_data(data)
+
+    def pop_oldest_messages(self, count: int = 1) -> List[Dict[str, str]]:
+        """移除并返回最早的几条消息（用于摘要）"""
+        data = self.load_data()
+        if len(data["messages"]) < count:
+            return []
         
-        # 简单的上下文修剪：保留最近的 N 轮对话 (N * 2 条消息)
-        # 注意：这里假设 role 总是成对出现，实际可能需要更复杂的逻辑
-        max_messages = config.MAX_HISTORY_ROUNDS * 2
-        if len(history) > max_messages:
-            # 保留 System prompt (如果有的话) 和最近的消息
-            # 这里简单处理，直接切片保留最后 max_messages 条
-            history = history[-max_messages:]
-            
-        self.save_history(history)
+        removed = data["messages"][:count]
+        data["messages"] = data["messages"][count:]
+        self.save_data(data)
+        return removed
 
     def get_context(self) -> List[Dict[str, str]]:
         """获取用于传给 LLM 的上下文"""
-        history = self.load_history()
-        # 始终在开头添加 System Prompt
-        system_message = {"role": "system", "content": config.SYSTEM_PROMPT}
-        return [system_message] + history
+        data = self.load_data()
+        messages = data["messages"]
+        summary = data.get("summary", "")
+        
+        context = []
+        
+        # 1. System Prompt
+        context.append({"role": "system", "content": config.SYSTEM_PROMPT})
+        
+        # 2. Summary (如果存在)
+        if summary:
+            summary_prompt = f"【前情提要】\n之前的对话摘要：{summary}\n（请基于此背景继续对话，但不要重复摘要内容）"
+            context.append({"role": "system", "content": summary_prompt})
+            
+        # 3. Recent Messages
+        context.extend(messages)
+        
+        return context
 
     def clear_history(self):
-        """清空历史"""
-        self.save_history([])
+        """清空所有历史和摘要"""
+        self.save_data({"summary": "", "messages": []})

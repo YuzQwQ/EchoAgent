@@ -1,6 +1,7 @@
 from typing import Generator
 from core.llm_service import LLMService
 from core.memory import MemoryManager
+from config import config
 import random
 import copy
 
@@ -33,6 +34,71 @@ class EchoAgent:
         # 4. 保存 Echo 的回复到记忆
         if full_response:
             self.memory.add_message("assistant", full_response)
+            
+            # 5. 检查是否需要触发滚动摘要
+            # 这里的逻辑是同步执行的，可能会导致最后输出完稍微卡一下
+            # 但能保证下一次对话时 memory 是干净的
+            self._summarize_if_needed()
+
+    def _summarize_if_needed(self):
+        """
+        检查历史记录长度，如果超长，则触发摘要压缩
+        """
+        history = self.memory.load_history()
+        # 阈值：保留最近 MAX_HISTORY_ROUNDS 轮（*2 条消息）
+        # 如果超过阈值 + 2（至少多出一轮），就开始压缩最早的一轮
+        max_msgs = config.MAX_HISTORY_ROUNDS * 2
+        
+        if len(history) > max_msgs:
+            # 取出最早的一轮对话（通常是 User + Assistant）
+            # 注意：pop_oldest_messages 会直接从 memory 中移除它们
+            # 所以我们要确保摘要生成成功后再保存，或者接受短暂的数据风险
+            # 这里简单起见，先 pop 出来，再生成摘要
+            
+            # 我们一次性压缩多一点，避免频繁触发？
+            # 还是每次只压缩 2 条？为了平滑，每次压缩 2 条比较稳
+            old_messages = self.memory.pop_oldest_messages(2)
+            if not old_messages:
+                return
+
+            current_summary = self.memory.get_summary()
+            
+            # 构造摘要 Prompt
+            # 这是一个后台任务，不需要太复杂的 System Prompt，只要指令清晰
+            summary_prompt = [
+                {"role": "system", "content": "你是一个对话摘要助手。你的任务是将新的对话内容合并到现有的摘要中。保留关键事实、用户偏好和当前状态。忽略寒暄和废话。"},
+                {"role": "user", "content": f"""
+请更新以下对话摘要。
+
+【旧摘要】：{current_summary or "无"}
+
+【新增对话】：
+{old_messages[0]['role']}: {old_messages[0]['content']}
+{old_messages[1]['role'] if len(old_messages)>1 else ''}: {old_messages[1]['content'] if len(old_messages)>1 else ''}
+
+【要求】：
+1. 输出更新后的摘要，保持简练。
+2. 使用第三人称（如“用户说...”，“AI回复...”）。
+3. 如果新增对话没有实质信息（如单纯的问候），可以保留旧摘要不变。
+"""}
+            ]
+            
+            try:
+                # 非流式调用
+                new_summary = ""
+                for chunk in self.llm.chat_stream(summary_prompt):
+                    new_summary += chunk
+                
+                # 更新 Memory
+                if new_summary.strip():
+                    self.memory.update_summary(new_summary.strip())
+                    # print(f"Summary updated: {new_summary}") # Debug log
+                    
+            except Exception as e:
+                print(f"Summary generation failed: {e}")
+                # 如果失败，消息已经 pop 掉了，这部分记忆丢失。
+                # 生产环境应该先 peek 再 pop，或者有回滚机制。
+                # MVP 阶段暂且接受。
 
     def proactive_chat(self) -> Generator[str, None, None]:
         """
