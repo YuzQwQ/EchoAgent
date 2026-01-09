@@ -2,7 +2,7 @@ import os
 from dotenv import load_dotenv
 
 # 加载 .env 文件
-load_dotenv()
+load_dotenv(override=True)
 
 def load_system_prompt():
     """从文件加载 System Prompt"""
@@ -18,11 +18,22 @@ def load_system_prompt():
     return os.getenv("SYSTEM_PROMPT", "You are Echo, a helpful AI assistant.")
 
 class Config:
-    # LLM 设置
-    LLM_API_KEY = os.getenv("LLM_API_KEY", "")
-    LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://api.openai.com/v1")
-    LLM_MODEL = os.getenv("LLM_MODEL", "gpt-3.5-turbo")
-    
+    # --- Primary Model (Chat) ---
+    # 优先读取 PRIMARY_ 前缀，回退到旧的 LLM_ 前缀以保持兼容（如果有旧配置残留）
+    PRIMARY_API_KEY = os.getenv("PRIMARY_MODEL_API_KEY") or os.getenv("LLM_API_KEY", "")
+    PRIMARY_BASE_URL = os.getenv("PRIMARY_MODEL_BASE_URL") or os.getenv("LLM_BASE_URL", "https://api.openai.com/v1")
+    PRIMARY_MODEL_NAME = os.getenv("PRIMARY_MODEL") or os.getenv("LLM_MODEL", "gpt-3.5-turbo")
+
+    # 兼容旧代码的别名
+    LLM_API_KEY = PRIMARY_API_KEY
+    LLM_BASE_URL = PRIMARY_BASE_URL
+    LLM_MODEL = PRIMARY_MODEL_NAME
+
+    # --- Vision Model (Image Understanding) ---
+    VISION_API_KEY = os.getenv("VISION_MODEL_API_KEY", "")
+    VISION_BASE_URL = os.getenv("VISION_MODEL_BASE_URL", "https://api.siliconflow.cn/v1") # 假设是 SiliconFlow
+    VISION_MODEL_NAME = os.getenv("VISION_MODEL", "Qwen/Qwen-VL-Chat")
+
     # 记忆设置
     HISTORY_FILE = os.path.join(os.getcwd(), "conversation.json")
     MAX_HISTORY_ROUNDS = int(os.getenv("MAX_HISTORY_ROUNDS", 10))

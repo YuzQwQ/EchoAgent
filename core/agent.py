@@ -1,5 +1,6 @@
 from typing import Generator
 from core.llm_service import LLMService
+from core.vision_service import VisionService
 from core.memory import MemoryManager
 from config import config
 import random
@@ -8,6 +9,7 @@ import copy
 class EchoAgent:
     def __init__(self):
         self.llm = LLMService()
+        self.vision = VisionService()
         self.memory = MemoryManager()
 
     def chat(self, user_input: str) -> Generator[str, None, None]:
@@ -51,6 +53,58 @@ class EchoAgent:
             # 5. 检查是否需要触发滚动摘要
             # 这里的逻辑是同步执行的，可能会导致最后输出完稍微卡一下
             # 但能保证下一次对话时 memory 是干净的
+            self._summarize_if_needed()
+
+    def process_image(self, image_data: bytes, mime_type: str = "image/jpeg") -> Generator[str, None, None]:
+        """
+        处理图片输入：
+        1. 调用 Vision Service 识别图片
+        2. 将识别结果注入上下文
+        3. 让 Echo 基于识别结果生成回复
+        """
+        yield "👀 正在观察图片..."
+        
+        # 1. 识别图片
+        description = self.vision.analyze_image(image_data, mime_type)
+        
+        if "失败" in description:
+            yield f"\n\n看不清这张图... ({description})"
+            return
+
+        yield "\n\n🤔 嗯..." # 模拟思考
+
+        # 2. 构造上下文消息
+        # 格式：【视觉观察】用户发送了一张图片。内容描述：...
+        observation_msg = f"【视觉观察】用户发送了一张图片。\n[图片内容描述]: {description}"
+        
+        # 3. 存入记忆 (作为 System 消息或特殊的 User 消息)
+        # 这里为了让 LLM 觉得是用户发的图，我们用 user role，但加标注
+        self.memory.add_message("user", observation_msg)
+        
+        # 4. 触发回复生成 (就像用户发了文字一样)
+        # 获取上下文
+        context = self.memory.get_context()
+        
+        # 插入逻辑强化 (同 chat)
+        reinforcement_prompt = {
+            "role": "system",
+            "content": "【逻辑守则】\n1. 用户刚发了一张图片，请根据[图片内容描述]进行回应。\n2. 保持日常、微毒舌风格。如果图片很有趣，可以吐槽；如果是清单，可以确认。"
+        }
+        context.insert(-1, reinforcement_prompt)
+
+        full_response = ""
+        try:
+            for chunk in self.llm.chat_stream(context):
+                full_response += chunk
+                yield chunk
+        except Exception as e:
+            error_msg = f"\n\n(Error: {str(e)})"
+            full_response += error_msg
+            yield error_msg
+
+        # 保存回复
+        if full_response:
+            self.memory.add_message("assistant", full_response)
             self._summarize_if_needed()
 
     def _summarize_if_needed(self):
