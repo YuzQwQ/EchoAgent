@@ -103,7 +103,7 @@
             cursor: not-allowed;
         }
 
-        #img-btn {
+        #img-btn, #tts-btn {
             padding: 0 12px;
             background-color: transparent;
             color: #555;
@@ -116,7 +116,7 @@
             align-items: center;
             justify-content: center;
         }
-        #img-btn:hover {
+        #img-btn:hover, #tts-btn:hover {
             background-color: #f0f0f0;
             color: #333;
         }
@@ -166,6 +166,7 @@
 <div id="input-area">
     <input type="file" id="image-upload" accept="image/*" style="display: none;">
     <button id="img-btn" title="发送图片">📷</button>
+    <button id="tts-btn" title="开启/关闭语音" style="margin-left: 5px;">🔇</button>
     <textarea id="message-input" placeholder="和 Echo 聊聊... (支持拖拽图片)" rows="1"></textarea>
     <button id="send-btn">发送</button>
 </div>
@@ -175,11 +176,23 @@
     const messageInput = document.getElementById('message-input');
     const sendBtn = document.getElementById('send-btn');
     const imgBtn = document.getElementById('img-btn');
+    const ttsBtn = document.getElementById('tts-btn');
     const imageUpload = document.getElementById('image-upload');
     
     let ws = null;
     let currentEchoMessageDiv = null;
     let isConnected = false;
+    let isTTSEnabled = false;
+    let audioQueue = [];
+    let isPlayingAudio = false;
+
+    // TTS 开关
+    ttsBtn.addEventListener('click', () => {
+        isTTSEnabled = !isTTSEnabled;
+        ttsBtn.textContent = isTTSEnabled ? '🔊' : '🔇';
+        ttsBtn.style.color = isTTSEnabled ? '#007bff' : '#555';
+        ttsBtn.style.borderColor = isTTSEnabled ? '#007bff' : '#ddd';
+    });
 
     function connectWebSocket() {
         // 连接本地 FastAPI 服务
@@ -193,24 +206,25 @@
         };
 
         ws.onmessage = (event) => {
-            const data = JSON.parse(event.data);
-            
-            if (data.type === 'chunk') {
-                // 流式输出
-                if (!currentEchoMessageDiv) {
-                    currentEchoMessageDiv = createMessageDiv('echo');
-                    chatContainer.appendChild(currentEchoMessageDiv);
+                const data = JSON.parse(event.data);
+                
+                if (data.type === 'chunk') {
+                    if (!currentEchoMessageDiv) {
+                        currentEchoMessageDiv = createMessageDiv('echo');
+                        chatContainer.appendChild(currentEchoMessageDiv);
+                    }
+                    currentEchoMessageDiv.innerText += data.content;
+                    scrollToBottom();
+                } else if (data.type === 'audio') {
+                    // 收到音频数据 (base64)
+                    queueAudio(data.content);
+                } else if (data.type === 'done') {
+                    currentEchoMessageDiv = null;
+                } else if (data.type === 'error') {
+                    appendSystemMessage(`Error: ${data.content}`);
+                    currentEchoMessageDiv = null;
                 }
-                currentEchoMessageDiv.innerText += data.content;
-                scrollToBottom();
-            } else if (data.type === 'done') {
-                // 结束
-                currentEchoMessageDiv = null;
-            } else if (data.type === 'error') {
-                appendSystemMessage(`Error: ${data.content}`);
-                currentEchoMessageDiv = null;
-            }
-        };
+            };
 
         ws.onclose = () => {
             console.log('Disconnected');
@@ -239,7 +253,8 @@
         // 2. 发送给后端
         ws.send(JSON.stringify({
             type: 'text',
-            content: text
+            content: text,
+            enable_tts: isTTSEnabled
         }));
 
         // 3. 清空输入框
@@ -264,7 +279,40 @@
         chatContainer.scrollTop = chatContainer.scrollHeight;
     }
 
-    // 输入框自适应高度
+    // 音频播放队列逻辑
+    function queueAudio(base64Data) {
+        audioQueue.push(base64Data);
+        if (!isPlayingAudio) {
+            playNextAudio();
+        }
+    }
+
+    function playNextAudio() {
+        if (audioQueue.length === 0) {
+            isPlayingAudio = false;
+            return;
+        }
+        
+        isPlayingAudio = true;
+        const base64Data = audioQueue.shift();
+        const audio = new Audio("data:audio/mpeg;base64," + base64Data);
+        
+        audio.onended = () => {
+            playNextAudio();
+        };
+        
+        audio.onerror = (e) => {
+            console.error("Audio playback error", e);
+            playNextAudio(); // 出错继续播放下一段
+        };
+        
+        audio.play().catch(e => {
+            console.error("Auto-play prevented", e);
+            // 可能是浏览器策略拦截，尝试继续
+            playNextAudio();
+        });
+    }
+
     messageInput.addEventListener('input', function() {
         this.style.height = 'auto';
         this.style.height = (this.scrollHeight) + 'px';

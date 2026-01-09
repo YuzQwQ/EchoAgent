@@ -3,4 +3,4 @@ openai
 python-dotenv
 tenacity
 websockets
-elevenlabs
+edge-tts

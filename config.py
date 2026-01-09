@@ -31,14 +31,13 @@ class Config:
 
     # Vision Model Config
     VISION_MODEL_API_KEY = os.getenv("VISION_MODEL_API_KEY", os.getenv("DASHSCOPE_API_KEY"))
-    VISION_MODEL_BASE_URL = os.getenv("VISION_MODEL_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
+    VISION_MODEL_BASE_URL = os.getenv("VISION_MODEL_BASE_URL", "https://api.siliconflow.cn/v1")
     VISION_MODEL = os.getenv("VISION_MODEL", "qwen-vl-max")
 
-    # ElevenLabs Config
-    ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
-    ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID")
+    # Edge TTS Config
+    EDGE_TTS_VOICE = os.getenv("EDGE_TTS_VOICE", "zh-CN-XiaoyiNeural")
 
-    # 记忆设置
+    # Agent Config记忆设置
     HISTORY_FILE = os.path.join(os.getcwd(), "conversation.json")
     MAX_HISTORY_ROUNDS = int(os.getenv("MAX_HISTORY_ROUNDS", 10))
     

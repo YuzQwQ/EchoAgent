@@ -113,13 +113,8 @@ async def websocket_endpoint(websocket: WebSocket):
                                 tts_buffer = tts_buffer[end_pos:] # 剩余部分留给下一次
                                 
                                 if sentence:
-                                    # 异步生成语音（为了不阻塞文本流，最好用 run_in_executor 或简单的 await）
-                                    # 由于 tts_service.text_to_speech 是同步的，这里会阻塞一下
-                                    # 考虑到这是本地运行，稍微卡顿一下文本输出问题不大，或者我们可以把 TTS 放到后台任务
-                                    # 但为了同步性（说完一句播一句），阻塞其实也可以接受
-                                    
-                                    # 使用 asyncio.to_thread 避免阻塞事件循环
-                                    audio_base64 = await asyncio.to_thread(tts_service.text_to_speech, sentence)
+                                    # 生成语音 (现在 text_to_speech 是 async 的，直接 await)
+                                    audio_base64 = await tts_service.text_to_speech(sentence)
                                     
                                     if audio_base64:
                                         await websocket.send_json({
@@ -131,7 +126,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     
                     # 循环结束后，处理剩余的 buffer
                     if enable_tts and tts_buffer.strip():
-                        audio_base64 = await asyncio.to_thread(tts_service.text_to_speech, tts_buffer.strip())
+                        audio_base64 = await tts_service.text_to_speech(tts_buffer.strip())
                         if audio_base64:
                             await websocket.send_json({
                                 "type": "audio",

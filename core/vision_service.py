@@ -6,10 +6,10 @@ from typing import Optional
 class VisionService:
     def __init__(self):
         self.client = OpenAI(
-            api_key=config.VISION_API_KEY,
-            base_url=config.VISION_BASE_URL
+            api_key=config.VISION_MODEL_API_KEY,
+            base_url=config.VISION_MODEL_BASE_URL
         )
-        self.model = config.VISION_MODEL_NAME
+        self.model = config.VISION_MODEL
 
     def analyze_image(self, image_data: bytes, mime_type: str = "image/jpeg") -> str:
         """
@@ -22,7 +22,7 @@ class VisionService:
         Returns:
             图片的文本描述
         """
-        if not config.VISION_API_KEY:
+        if not config.VISION_MODEL_API_KEY:
             return "⚠️ 视觉模型 API Key 未配置"
 
         try:
