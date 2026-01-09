@@ -2,3 +2,5 @@ streamlit
 openai
 python-dotenv
 tenacity
+websockets
+elevenlabs

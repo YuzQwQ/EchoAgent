@@ -12,6 +12,14 @@ env/
 # Environment Variables (Privacy - Critical)
 .env
 
+# Node.js / Electron
+node_modules/
+npm-debug.log
+yarn-error.log
+dist/
+build/
+.npm/
+
 # IDE settings
 .vscode/
 .idea/

@@ -29,10 +29,14 @@ class Config:
     LLM_BASE_URL = PRIMARY_BASE_URL
     LLM_MODEL = PRIMARY_MODEL_NAME
 
-    # --- Vision Model (Image Understanding) ---
-    VISION_API_KEY = os.getenv("VISION_MODEL_API_KEY", "")
-    VISION_BASE_URL = os.getenv("VISION_MODEL_BASE_URL", "https://api.siliconflow.cn/v1") # 假设是 SiliconFlow
-    VISION_MODEL_NAME = os.getenv("VISION_MODEL", "Qwen/Qwen-VL-Chat")
+    # Vision Model Config
+    VISION_MODEL_API_KEY = os.getenv("VISION_MODEL_API_KEY", os.getenv("DASHSCOPE_API_KEY"))
+    VISION_MODEL_BASE_URL = os.getenv("VISION_MODEL_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
+    VISION_MODEL = os.getenv("VISION_MODEL", "qwen-vl-max")
+
+    # ElevenLabs Config
+    ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
+    ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID")
 
     # 记忆设置
     HISTORY_FILE = os.path.join(os.getcwd(), "conversation.json")
