@@ -20,6 +20,19 @@ class EchoAgent:
         # 2. 获取上下文
         context = self.memory.get_context()
 
+        # [新增] 短期逻辑强化 (Context Reinforcement)
+        # 在 System Prompt 和 History 之后，User Input 之前，插入逻辑约束
+        # 利用 Recency Bias 强制模型关注短期一致性和收敛性
+        reinforcement_prompt = {
+            "role": "system",
+            "content": "【逻辑守则】\n1. 请回顾最近 3 轮对话，确保你的回复与之前的陈述保持绝对逻辑一致，禁止“吃书”或自我矛盾。\n2. 如果用户在追问细节，请务必“收敛”话题，提供更深层的具体信息，严禁重复已说过的笼统观点。\n3. 保持人设的连贯性。"
+        }
+        # 插入在倒数第一条消息（最新的 User Input）之前
+        if len(context) > 0 and context[-1]["role"] == "user":
+            context.insert(-1, reinforcement_prompt)
+        else:
+            context.append(reinforcement_prompt)
+
         # 3. 调用 LLM 生成回复
         full_response = ""
         try:
