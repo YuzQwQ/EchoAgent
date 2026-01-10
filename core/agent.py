@@ -25,6 +25,94 @@ class EchoAgent:
         self.tools.register(MemoryCapabilityTool())
         self.tools.register(SystemSelfAwarenessTool())
 
+    def _process_stream_response(self, context) -> Generator[str, None, str]:
+        """
+        处理流式响应，支持 <thought> 标签过滤
+        返回最终的 clean response
+        """
+        full_raw_response = ""
+        final_clean_response = ""
+        buffer = ""
+        is_in_thought = False
+        has_started_response = False
+
+        try:
+            for chunk in self.llm.chat_stream(context):
+                full_raw_response += chunk
+                buffer += chunk
+                
+                # 1. 检测 <thought> 开始
+                if "<thought>" in buffer and not is_in_thought and not has_started_response:
+                    is_in_thought = True
+                
+                # 2. 检测 <response> 开始
+                if "<response>" in buffer:
+                    pre_response, post_response = buffer.split("<response>", 1)
+                    
+                    if is_in_thought:
+                        # 打印思考过程用于调试
+                        thought_content = pre_response.replace('<thought>', '').replace('</thought>', '').strip()
+                        print(f"\n🧠 [Echo Thought]: {thought_content}\n")
+                    
+                    is_in_thought = False
+                    has_started_response = True
+                    buffer = post_response # 剩余 buffer 是 response 内容
+                
+                # 3. 处理 Response 内容
+                if has_started_response:
+                    # 检测 </response> 结束
+                    if "</response>" in buffer:
+                        content, remainder = buffer.split("</response>", 1)
+                        if content:
+                            yield content
+                            final_clean_response += content
+                        # 遇到结束标签，清空 buffer 并停止生成
+                        buffer = ""
+                        # break # 继续消耗流以保持连接状态，但不输出了
+                    else:
+                        # 没遇到结束标签，直接输出 buffer
+                        yield buffer
+                        final_clean_response += buffer
+                        buffer = ""
+                
+                # 4. Fallback: 如果 buffer 过长且没有任何标签，说明模型没听话，直接输出
+                elif len(buffer) > 50 and not is_in_thought:
+                    print("⚠️ [Echo Logic] No tags detected, falling back to raw stream.")
+                    has_started_response = True
+                    yield buffer
+                    final_clean_response += buffer
+                    buffer = ""
+
+            # 流结束后的清理
+            if has_started_response and buffer and "</response>" not in buffer:
+                yield buffer
+                final_clean_response += buffer
+            elif not has_started_response and buffer:
+                 # 如果全程没标签，且 buffer 还有剩，输出它
+                 if "<thought>" not in buffer:
+                     yield buffer
+                     final_clean_response += buffer
+
+        except Exception as e:
+            error_msg = f"\n\n(Error: {str(e)})"
+            yield error_msg
+            return error_msg
+
+        return final_clean_response
+
+    def _run_async_summary(self):
+        """
+        后台执行摘要任务
+        """
+        import threading
+        
+        def summary_task():
+            self._summarize_if_needed()
+
+        thread = threading.Thread(target=summary_task)
+        thread.daemon = True # 设置为守护线程，防止阻塞主程序退出
+        thread.start()
+
     def chat(self, user_input: str) -> Generator[str, None, None]:
         """
         处理用户输入，生成回复，并管理记忆
@@ -49,11 +137,17 @@ class EchoAgent:
             context.insert(0, {"role": "system", "content": capabilities_prompt})
 
         # [新增] 短期逻辑强化 (Context Reinforcement)
-        # 在 System Prompt 和 History 之后，User Input 之前，插入逻辑约束
-        # 利用 Recency Bias 强制模型关注短期一致性和收敛性
+        # 动态注入硬规则，不占用 System Prompt 长期记忆
+        reinforcement_content = (
+            "【逻辑守则（本次回复有效）】\n"
+            "1. **一致性检查**：回顾最近 3 轮对话，禁止自我矛盾。\n"
+            "2. **拒绝复读**：如果观点已表达过，请深入细节或换个角度，不要重复。\n"
+            "3. **收敛话题**：除非用户发起新话题，否则请聚焦当前话题，不要无故发散。\n"
+            "4. **执行 CoT**：必须先输出 <thought>，再输出 <response>。"
+        )
         reinforcement_prompt = {
             "role": "system",
-            "content": "【逻辑守则】\n1. 请回顾最近 3 轮对话，确保你的回复与之前的陈述保持绝对逻辑一致，禁止“吃书”或自我矛盾。\n2. 如果用户在追问细节，请务必“收敛”话题，提供更深层的具体信息，严禁重复已说过的笼统观点。\n3. 保持人设的连贯性，适当使用 Emoji (😏/🙄/🌚/🤣) 增强语气和微毒舌感。"
+            "content": reinforcement_content
         }
         # 插入在倒数第一条消息（最新的 User Input）之前
         if len(context) > 0 and context[-1]["role"] == "user":
@@ -61,25 +155,16 @@ class EchoAgent:
         else:
             context.append(reinforcement_prompt)
 
-        # 3. 调用 LLM 生成回复
-        full_response = ""
-        try:
-            for chunk in self.llm.chat_stream(context):
-                full_response += chunk
-                yield chunk
-        except Exception as e:
-            error_msg = f"\n\n(Error: {str(e)})"
-            full_response += error_msg
-            yield error_msg
+        # 3. 调用 LLM 生成回复 (使用 process_stream_response 处理 Hidden CoT)
+        final_response = yield from self._process_stream_response(context)
 
         # 4. 保存 Echo 的回复到记忆
-        if full_response:
-            self.memory.add_message("assistant", full_response)
+        if final_response:
+            self.memory.add_message("assistant", final_response)
             
-            # 5. 检查是否需要触发滚动摘要
-            # 这里的逻辑是同步执行的，可能会导致最后输出完稍微卡一下
-            # 但能保证下一次对话时 memory 是干净的
-            self._summarize_if_needed()
+            # 5. 异步触发滚动摘要
+            # 不阻塞当前回复生成
+            self._run_async_summary()
 
     def process_image(self, image_data: bytes, mime_type: str = "image/jpeg") -> Generator[str, None, None]:
         """
@@ -119,17 +204,22 @@ class EchoAgent:
             context.insert(0, {"role": "system", "content": capabilities_prompt})
 
         # 插入逻辑强化 (同 chat)
+        reinforcement_content = (
+            "【视觉逻辑守则】\n"
+            "1. **基于观察**：仅根据[图片内容描述]回应。\n"
+            "2. **风格保持**：微毒舌、日常化、Emoji 适度。\n"
+            "3. **执行 CoT**：必须先输出 <thought> 分析图片要点，再输出 <response>。"
+        )
         reinforcement_prompt = {
             "role": "system",
-            "content": "【逻辑守则】\n1. 用户刚发了一张图片，请根据[图片内容描述]进行回应。\n2. 保持日常、微毒舌风格，适当使用 Emoji (😏/🙄/🌚)。如果图片很有趣，可以吐槽；如果是清单，可以确认。"
+            "content": reinforcement_content
         }
         context.insert(-1, reinforcement_prompt)
 
         full_response = ""
         try:
-            for chunk in self.llm.chat_stream(context):
-                full_response += chunk
-                yield chunk
+            # 使用 process_stream_response 处理 Hidden CoT
+            full_response = yield from self._process_stream_response(context)
         except Exception as e:
             error_msg = f"\n\n(Error: {str(e)})"
             full_response += error_msg
@@ -138,7 +228,8 @@ class EchoAgent:
         # 保存回复
         if full_response:
             self.memory.add_message("assistant", full_response)
-            self._summarize_if_needed()
+            # 异步触发滚动摘要
+            self._run_async_summary()
 
     def _summarize_if_needed(self):
         """
@@ -223,7 +314,7 @@ class EchoAgent:
 
         full_response = ""
         try:
-            for chunk in self.llm.chat_stream(context):
+            for chunk in self._process_stream_response(context):
                 full_response += chunk
             
             clean_response = full_response.strip()
