@@ -2,6 +2,8 @@ from typing import Generator
 from core.llm_service import LLMService
 from core.vision_service import VisionService
 from core.memory import MemoryManager
+from core.tools.base import ToolRegistry
+from core.tools.system_tools import VisionCapabilityTool, TTSCapabilityTool, MemoryCapabilityTool, SystemSelfAwarenessTool
 from config import config
 import random
 import copy
@@ -11,6 +13,17 @@ class EchoAgent:
         self.llm = LLMService()
         self.vision = VisionService()
         self.memory = MemoryManager()
+        
+        # 初始化工具注册表
+        self.tools = ToolRegistry()
+        self._register_core_tools()
+
+    def _register_core_tools(self):
+        """注册核心系统能力工具"""
+        self.tools.register(VisionCapabilityTool())
+        self.tools.register(TTSCapabilityTool())
+        self.tools.register(MemoryCapabilityTool())
+        self.tools.register(SystemSelfAwarenessTool())
 
     def chat(self, user_input: str) -> Generator[str, None, None]:
         """
@@ -21,6 +34,19 @@ class EchoAgent:
 
         # 2. 获取上下文
         context = self.memory.get_context()
+
+        # [新增] 注入能力认知 (Context Injection)
+        # 动态获取当前工具/能力的状态描述，注入到 System Prompt 之后
+        # 我们寻找 context 中第一个 system message (通常是 system prompt) 并追加内容
+        # 如果没有找到，就新建一个
+        capabilities_prompt = self.tools.get_capabilities_prompt()
+        
+        if context and context[0]["role"] == "system":
+            # 追加到现有的 System Prompt
+            context[0]["content"] += "\n" + capabilities_prompt
+        else:
+            # 插入新的 System Prompt
+            context.insert(0, {"role": "system", "content": capabilities_prompt})
 
         # [新增] 短期逻辑强化 (Context Reinforcement)
         # 在 System Prompt 和 History 之后，User Input 之前，插入逻辑约束
@@ -85,6 +111,13 @@ class EchoAgent:
         # 获取上下文
         context = self.memory.get_context()
         
+        # 插入能力认知 (同 chat)
+        capabilities_prompt = self.tools.get_capabilities_prompt()
+        if context and context[0]["role"] == "system":
+            context[0]["content"] += "\n" + capabilities_prompt
+        else:
+            context.insert(0, {"role": "system", "content": capabilities_prompt})
+
         # 插入逻辑强化 (同 chat)
         reinforcement_prompt = {
             "role": "system",
