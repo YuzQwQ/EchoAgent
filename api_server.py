@@ -24,6 +24,30 @@ app.add_middleware(
 agent = EchoAgent()
 tts_service = TTSService()
 
+def sanitize_text_for_tts(text: str) -> str:
+    """
+    清洗文本，去除不适合 TTS 朗读的符号（如 Emoji、Markdown、动作描写）
+    """
+    # 1. 去除 Emoji (简单范围匹配)
+    # 这是一个比较宽泛的 regex，匹配常见 emoji 和图形符号
+    text = re.sub(r'[\U00010000-\U0010ffff]', '', text)
+    
+    # 2. 去除 Markdown 粗体/斜体符号 (*, **)
+    text = text.replace("**", "").replace("*", "")
+    
+    # 3. 去除括号内的动作描写 (e.g., （笑）, (叹气))
+    # 匹配中文全角括号和英文半角括号
+    text = re.sub(r'（.*?）', '', text)
+    text = re.sub(r'\(.*?\)', '', text)
+    
+    # 4. 替换换行符为逗号或句号，增加自然停顿
+    text = text.replace("\n", "，")
+    
+    # 5. 去除多余空格
+    text = re.sub(r'\s+', ' ', text).strip()
+    
+    return text
+
 @app.websocket("/ws/chat")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
@@ -88,7 +112,10 @@ async def websocket_endpoint(websocket: WebSocket):
                 # 流式回复 + TTS 分句缓冲
                 full_response = ""
                 tts_buffer = ""
-                sentence_endings = re.compile(r'[.!?。？！\n]+')
+                
+                # 优化分句正则：更严格的切分，支持换行作为切分点
+                # 排除省略号(...)以免切碎句子
+                sentence_endings = re.compile(r'(?<!\.)[.!?。？！\n]+')
 
                 try:
                     for chunk in agent.chat(user_input):
@@ -109,12 +136,15 @@ async def websocket_endpoint(websocket: WebSocket):
                             if match:
                                 # 找到结束符，切分句子
                                 end_pos = match.end()
-                                sentence = tts_buffer[:end_pos].strip()
+                                raw_sentence = tts_buffer[:end_pos].strip()
                                 tts_buffer = tts_buffer[end_pos:] # 剩余部分留给下一次
                                 
-                                if sentence:
-                                    # 生成语音 (现在 text_to_speech 是 async 的，直接 await)
-                                    audio_base64 = await tts_service.text_to_speech(sentence)
+                                # 清洗文本（去 Emoji，去动作描写）
+                                clean_sentence = sanitize_text_for_tts(raw_sentence)
+                                
+                                if clean_sentence:
+                                    # 生成语音
+                                    audio_base64 = await tts_service.text_to_speech(clean_sentence)
                                     
                                     if audio_base64:
                                         await websocket.send_json({
@@ -126,12 +156,16 @@ async def websocket_endpoint(websocket: WebSocket):
                     
                     # 循环结束后，处理剩余的 buffer
                     if enable_tts and tts_buffer.strip():
-                        audio_base64 = await tts_service.text_to_speech(tts_buffer.strip())
-                        if audio_base64:
-                            await websocket.send_json({
-                                "type": "audio",
-                                "content": audio_base64
-                            })
+                        raw_sentence = tts_buffer.strip()
+                        clean_sentence = sanitize_text_for_tts(raw_sentence)
+                        
+                        if clean_sentence:
+                            audio_base64 = await tts_service.text_to_speech(clean_sentence)
+                            if audio_base64:
+                                await websocket.send_json({
+                                    "type": "audio",
+                                    "content": audio_base64
+                                })
 
                     # 发送结束标记
                     await websocket.send_json({
