@@ -58,6 +58,20 @@ class EchoAgent:
                     has_started_response = True
                     buffer = post_response # 剩余 buffer 是 response 内容
                 
+                # [新增] 容错：如果检测到 </thought> 结束但没检测到 <response>，且 buffer 里有后续内容，
+                # 强制进入 response 模式（防止模型漏写 <response> 标签）
+                elif "</thought>" in buffer and not has_started_response:
+                     pre_thought, post_thought = buffer.split("</thought>", 1)
+                     # 确认 post_thought 不仅仅是空字符
+                     if post_thought.strip():
+                         print("⚠️ [Echo Logic] Missing <response> tag, auto-starting response.")
+                         thought_content = pre_thought.replace('<thought>', '').strip()
+                         print(f"\n🧠 [Echo Thought]: {thought_content}\n")
+                         
+                         is_in_thought = False
+                         has_started_response = True
+                         buffer = post_thought.lstrip() # 去除可能的换行
+
                 # 3. 处理 Response 内容
                 if has_started_response:
                     # 检测 </response> 结束
@@ -76,12 +90,18 @@ class EchoAgent:
                         buffer = ""
                 
                 # 4. Fallback: 如果 buffer 过长且没有任何标签，说明模型没听话，直接输出
-                elif len(buffer) > 50 and not is_in_thought:
+                elif len(buffer) > 200 and not is_in_thought: # 增加 buffer 长度容忍度，等待 <thought> 结束
                     print("⚠️ [Echo Logic] No tags detected, falling back to raw stream.")
-                    has_started_response = True
-                    yield buffer
-                    final_clean_response += buffer
-                    buffer = ""
+                    # 即使是 Fallback，也要尝试去除 </response>
+                    if "</response>" in buffer:
+                         content, _ = buffer.split("</response>", 1)
+                         yield content
+                         final_clean_response += content
+                         buffer = ""
+                    else:
+                         yield buffer
+                         final_clean_response += buffer
+                         buffer = ""
 
             # 流结束后的清理
             if has_started_response and buffer and "</response>" not in buffer:
@@ -89,7 +109,12 @@ class EchoAgent:
                 final_clean_response += buffer
             elif not has_started_response and buffer:
                  # 如果全程没标签，且 buffer 还有剩，输出它
-                 if "<thought>" not in buffer:
+                 # 再次尝试去除 </response> (针对 Fallback 情况)
+                 if "</response>" in buffer:
+                     content, _ = buffer.split("</response>", 1)
+                     yield content
+                     final_clean_response += content
+                 elif "<thought>" not in buffer:
                      yield buffer
                      final_clean_response += buffer
 
@@ -144,7 +169,7 @@ class EchoAgent:
             "2. **拒绝复读**：如果观点已表达过，请深入细节或换个角度，不要重复。\n"
             "3. **收敛话题**：除非用户发起新话题，否则请聚焦当前话题，不要无故发散。\n"
             "4. **执行 CoT**：必须先输出 <thought>，再输出 <response>。\n"
-            "5. **情感表达**：在 <response> 的**开头**，必须包含一个情感标签，格式为 [emotion:xxx]，其中 xxx 必须是以下之一：happy, sad, angry, surprised, shy, idle。例如：[emotion:happy]哈哈，是吗？"
+            "5. **情感表达**：在 <response> 的**开头**，必须包含一个情感标签，格式为 [emotion:xxx]，其中 xxx 必须是以下之一：happy, sad, angry, surprised, shy, idle。严禁编造其他标签（如 edge, computational 等）。"
         )
         reinforcement_prompt = {
             "role": "system",

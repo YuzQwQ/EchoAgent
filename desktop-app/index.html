@@ -357,13 +357,24 @@
 
                     if (!foundEmotion) {
                         pendingText += data.content;
-                        // 尝试匹配情感标签 [emotion:xxx]
+                        // 尝试匹配情感标签 [emotion:xxx] 或其他系统标签 [key:value]
                         // 考虑到标签可能分块到达，我们需要一定的 buffer
-                        // 正则：匹配开头的 [emotion:xxx]
-                        const match = pendingText.match(/^\[emotion:(\w+)\]/);
+                        // 正则：匹配开头的 [key:value] (允许冒号后有空格)
+                        const match = pendingText.match(/^\[(\w+):\s*(\w+)\]/);
                         if (match) {
-                            const emotion = match[1];
-                            triggerMotion(emotion); // 触发动作
+                            const key = match[1];
+                            const value = match[2];
+                            
+                            if (key === 'emotion') {
+                                triggerMotion(value); 
+                            } else {
+                                // 容错：处理非 standard emotion 标签
+                                console.warn(`Detected non-standard tag: [${key}:${value}]`);
+                                // 尝试映射一些已知错误
+                                if (value === 'computational') triggerMotion('idle');
+                                else triggerMotion('tap'); // 默认动作
+                            }
+
                             foundEmotion = true;
                             
                             // 将标签之后的内容追加到聊天框
