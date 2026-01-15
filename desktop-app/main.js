@@ -10,16 +10,16 @@ function createWindow() {
     width: 1000,
     height: 800,
     webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-      contextIsolation: true,
-      nodeIntegration: false
+      nodeIntegration: true,
+      contextIsolation: false,
+      webSecurity: false // 临时禁用 webSecurity 以允许加载本地资源 (Live2D JSON)
     }
   });
 
   mainWindow.loadFile('index.html');
   
   // 开发模式下打开 DevTools
-  // mainWindow.webContents.openDevTools();
+  mainWindow.webContents.openDevTools();
 
   mainWindow.on('closed', function () {
     mainWindow = null;

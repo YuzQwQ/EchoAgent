@@ -3,7 +3,15 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <!-- 放宽 CSP 限制：允许 WebSocket, CDN 脚本, 以及 Live2D 需要的 unsafe-eval -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline' 'unsafe-eval' https://cubism.live2d.com https://cdn.jsdelivr.net https://cdnjs.cloudflare.com ws://127.0.0.1:8000 data: blob: filesystem:;">
     <title>Echo Desktop</title>
+    <!-- 引入 PixiJS 和 Live2D 插件 (本地化) -->
+    <script src="assets/libs/live2dcubismcore.min.js"></script>
+    <script src="assets/libs/live2d.min.js"></script>
+    <script src="assets/libs/pixi.min.js"></script>
+    <script src="assets/libs/pixi-live2d-display.min.js"></script>
+
     <style>
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
@@ -11,8 +19,27 @@
             padding: 0;
             background-color: #f0f2f5;
             display: flex;
-            flex-direction: column;
+            flex-direction: row; /* 改为横向布局 */
             height: 100vh;
+        }
+
+        #live2d-container {
+            width: 45%; /* 增加宽度占比 */
+            max-width: 600px;
+            min-width: 300px;
+            background-color: #eef1f5;
+            display: flex;
+            justify-content: center;
+            align-items: flex-end;
+            border-right: 1px solid #ddd;
+            overflow: hidden;
+        }
+
+        #chat-section {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            height: 100%;
         }
         
         #chat-container {
@@ -158,17 +185,23 @@
 </head>
 <body>
 
-<div id="chat-container">
-    <!-- 消息会插入到这里 -->
-    <div class="message system">正在连接 Echo 大脑...</div>
+<div id="live2d-container">
+    <canvas id="live2d-canvas"></canvas>
 </div>
 
-<div id="input-area">
-    <input type="file" id="image-upload" accept="image/*" style="display: none;">
-    <button id="img-btn" title="发送图片">📷</button>
-    <button id="tts-btn" title="开启/关闭语音" style="margin-left: 5px;">🔇</button>
-    <textarea id="message-input" placeholder="和 Echo 聊聊... (支持拖拽图片)" rows="1"></textarea>
-    <button id="send-btn">发送</button>
+<div id="chat-section">
+    <div id="chat-container">
+        <!-- 消息会插入到这里 -->
+        <div class="message system">Echo 正在来的路上...</div>
+    </div>
+
+    <div id="input-area">
+        <input type="file" id="image-upload" accept="image/*" style="display: none;">
+        <button id="img-btn" title="发送图片">📷</button>
+        <button id="tts-btn" title="开启/关闭语音" style="margin-left: 5px;">🔇</button>
+        <textarea id="message-input" placeholder="和 Echo 聊聊... (支持拖拽图片)" rows="1"></textarea>
+        <button id="send-btn">发送</button>
+    </div>
 </div>
 
 <script>
@@ -185,6 +218,111 @@
     let isTTSEnabled = false;
     let audioQueue = [];
     let isPlayingAudio = false;
+    
+    // Live2D 相关变量
+    let live2dModel = null;
+    // const PIXI = window.PIXI; // 移除这行，直接使用全局 PIXI 避免重复声明错误
+    const Live2DModel = window.PIXI.live2d.Live2DModel;
+    
+    // 情感标签处理相关
+    let pendingText = "";
+    let foundEmotion = false;
+
+    // 初始化 Live2D
+    async function initLive2D() {
+        try {
+            const app = new PIXI.Application({
+                view: document.getElementById('live2d-canvas'),
+                autoStart: true,
+                backgroundAlpha: 0,
+                resizeTo: document.getElementById('live2d-container'),
+                resolution: window.devicePixelRatio || 1, // 修复模糊问题
+                autoDensity: true // 自动调整 CSS 像素与设备像素比例
+            });
+
+            const modelPath = 'assets/live2d/hiyori/hiyori_pro_zh/runtime/hiyori_pro_t11.model3.json';
+            
+            live2dModel = await Live2DModel.from(modelPath);
+
+            app.stage.addChild(live2dModel);
+
+            // 启用交互：点击触发随机动作
+            live2dModel.interactive = true;
+            live2dModel.buttonMode = true;
+            live2dModel.on('pointertap', () => {
+                live2dModel.internalModel.motionManager.startRandomMotion('Tap');
+            });
+
+            // 调整模型大小和位置
+            // 为了让模型更大，我们尝试覆盖更多高度，并允许稍微裁剪（如果需要）或者只是撑满
+            const scaleX = app.view.width / live2dModel.width;
+            const scaleY = app.view.height / live2dModel.height;
+            
+            // 使用较大的比例，让它尽可能大
+            let scale = Math.min(scaleX, scaleY) * 0.95;
+            
+            // 如果容器很宽，尝试限制最大比例以免像素化（虽然 Live2D 是矢量的，但在 Canvas 中有纹理限制）
+            // 但对于 Hiyori 这种全身模型，通常高度是瓶颈
+            
+            live2dModel.scale.set(scale);
+            live2dModel.x = (app.view.width - live2dModel.width) / 2;
+            
+            // 调整垂直位置，使其站在底部或中间
+            // Hiyori 模型原点通常在中心或脚底，视模型而定。
+            // 这里的 y 计算逻辑可能需要微调。如果模型原点在左上角 (0,0):
+            // (canvas高 - 模型高) / 2 会垂直居中
+            // * 1.0 会沉底 (假设 anchor 是 0,0)
+            
+            live2dModel.y = (app.view.height - live2dModel.height) * 0.5; // 垂直居中，稍微偏下
+
+            // 启用口型同步
+            live2dModel.internalModel.motionManager.stopAllMotions();
+            
+            console.log("Live2D Model Loaded");
+            
+        } catch (error) {
+            console.error("Failed to load Live2D model:", error);
+            appendSystemMessage(`Live2D 加载失败: ${error.message}`);
+        }
+    }
+    
+    function triggerMotion(emotion) {
+        if (!live2dModel) return;
+        console.log(`Triggering emotion: ${emotion}`);
+        
+        let group;
+        // 映射情感动作
+        // Hiyori 动作组: Idle, Flick, FlickDown, FlickUp, Tap, Tap@Body, Flick@Body
+        switch (emotion) {
+            case 'happy': 
+                group = 'Tap'; // 敲击动作通常比较欢快
+                break; 
+            case 'sad': 
+                group = 'FlickDown'; // 向下轻扫，通常是低头
+                break;
+            case 'angry': 
+                group = 'Flick@Body'; // 身体动作
+                break; 
+            case 'surprised': 
+                group = 'FlickUp'; // 向上轻扫，通常是抬头或惊讶
+                break;
+            case 'shy': 
+                group = 'Flick'; 
+                break;
+            case 'idle': 
+                group = 'Idle'; 
+                break;
+            default: 
+                group = 'Tap'; // 默认
+        }
+        
+        // 使用 startRandomMotion 播放该组下的随机动作
+        // Priority 3 (FORCE) 确保打断当前动作
+        live2dModel.internalModel.motionManager.startRandomMotion(group, 3);
+    }
+
+    // 页面加载完成后初始化
+    window.onload = initLive2D;
 
     // TTS 开关
     ttsBtn.addEventListener('click', () => {
@@ -201,7 +339,7 @@
         ws.onopen = () => {
             console.log('Connected to Echo API');
             isConnected = true;
-            appendSystemMessage('已连接到 Echo 大脑 🧠');
+            appendSystemMessage('Echo 已上线！！');
             sendBtn.disabled = false;
         };
 
@@ -212,8 +350,42 @@
                     if (!currentEchoMessageDiv) {
                         currentEchoMessageDiv = createMessageDiv('echo');
                         chatContainer.appendChild(currentEchoMessageDiv);
+                        // 新消息开始，重置情感检测状态
+                        pendingText = "";
+                        foundEmotion = false;
                     }
-                    currentEchoMessageDiv.innerText += data.content;
+
+                    if (!foundEmotion) {
+                        pendingText += data.content;
+                        // 尝试匹配情感标签 [emotion:xxx]
+                        // 考虑到标签可能分块到达，我们需要一定的 buffer
+                        // 正则：匹配开头的 [emotion:xxx]
+                        const match = pendingText.match(/^\[emotion:(\w+)\]/);
+                        if (match) {
+                            const emotion = match[1];
+                            triggerMotion(emotion); // 触发动作
+                            foundEmotion = true;
+                            
+                            // 将标签之后的内容追加到聊天框
+                            const remainingText = pendingText.substring(match[0].length);
+                            currentEchoMessageDiv.innerText += remainingText;
+                            pendingText = ""; // 清空 buffer
+                        } else {
+                            // 如果 buffer 还没匹配到
+                            // 1. 如果 buffer 根本不是以 [ 开头，说明没标签
+                            // 2. 如果 buffer 长度超过了标签的最大可能长度 (比如 30)，说明没标签
+                            if (!pendingText.startsWith('[') || pendingText.length > 30) {
+                                foundEmotion = true; // 放弃查找
+                                currentEchoMessageDiv.innerText += pendingText;
+                                pendingText = "";
+                            }
+                            // 3. 否则（以 [ 开头但还不够长），继续等待下一个 chunk
+                        }
+                    } else {
+                        // 已经处理过情感（或者确认没有），直接追加
+                        currentEchoMessageDiv.innerText += data.content;
+                    }
+
                     scrollToBottom();
                 } else if (data.type === 'audio') {
                     // 收到音频数据 (base64)
@@ -298,19 +470,89 @@
         const audio = new Audio("data:audio/mpeg;base64," + base64Data);
         
         audio.onended = () => {
+            isPlayingAudio = false;
+            stopLipSync();
             playNextAudio();
         };
         
         audio.onerror = (e) => {
             console.error("Audio playback error", e);
+            stopLipSync();
             playNextAudio(); // 出错继续播放下一段
         };
         
-        audio.play().catch(e => {
+        audio.play().then(() => {
+            startLipSync(audio);
+        }).catch(e => {
             console.error("Auto-play prevented", e);
             // 可能是浏览器策略拦截，尝试继续
             playNextAudio();
         });
+    }
+
+    // --- 口型同步逻辑 ---
+    let audioContext = null;
+    let analyser = null;
+    let dataArray = null;
+    let lipSyncFrameId = null;
+    let source = null;
+
+    function startLipSync(audioElement) {
+        if (!live2dModel) return;
+
+        if (!audioContext) {
+            audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            analyser = audioContext.createAnalyser();
+            analyser.fftSize = 256;
+            dataArray = new Uint8Array(analyser.frequencyBinCount);
+        }
+
+        // 连接音频源
+        try {
+            if (source) {
+                source.disconnect();
+            }
+            source = audioContext.createMediaElementSource(audioElement);
+            source.connect(analyser);
+            analyser.connect(audioContext.destination);
+        } catch (e) {
+            console.warn("Audio source connection issue:", e);
+        }
+
+        function updateLipSync() {
+            if (!isPlayingAudio) return;
+
+            analyser.getByteFrequencyData(dataArray);
+            
+            // 计算平均音量
+            let sum = 0;
+            for(let i = 0; i < dataArray.length; i++) {
+                sum += dataArray[i];
+            }
+            const average = sum / dataArray.length;
+            
+            // 映射到 0.0 - 1.0 的开口度
+            let openY = Math.min(1.0, average / 30.0);
+            
+            // 设置 Live2D 参数
+            if (live2dModel && live2dModel.internalModel) {
+                 live2dModel.internalModel.coreModel.setParameterValueById('ParamMouthOpenY', openY);
+            }
+
+            lipSyncFrameId = requestAnimationFrame(updateLipSync);
+        }
+
+        updateLipSync();
+    }
+
+    function stopLipSync() {
+        if (lipSyncFrameId) {
+            cancelAnimationFrame(lipSyncFrameId);
+            lipSyncFrameId = null;
+        }
+        if (live2dModel && live2dModel.internalModel) {
+            live2dModel.internalModel.coreModel.setParameterValueById('ParamMouthOpenY', 0);
+        }
     }
 
     messageInput.addEventListener('input', function() {

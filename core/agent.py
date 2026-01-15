@@ -143,7 +143,8 @@ class EchoAgent:
             "1. **一致性检查**：回顾最近 3 轮对话，禁止自我矛盾。\n"
             "2. **拒绝复读**：如果观点已表达过，请深入细节或换个角度，不要重复。\n"
             "3. **收敛话题**：除非用户发起新话题，否则请聚焦当前话题，不要无故发散。\n"
-            "4. **执行 CoT**：必须先输出 <thought>，再输出 <response>。"
+            "4. **执行 CoT**：必须先输出 <thought>，再输出 <response>。\n"
+            "5. **情感表达**：在 <response> 的**开头**，必须包含一个情感标签，格式为 [emotion:xxx]，其中 xxx 必须是以下之一：happy, sad, angry, surprised, shy, idle。例如：[emotion:happy]哈哈，是吗？"
         )
         reinforcement_prompt = {
             "role": "system",
