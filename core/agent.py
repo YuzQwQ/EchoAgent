@@ -107,49 +107,77 @@ class EchoAgent:
                         buffer = ""
                         # break # 继续消耗流以保持连接状态，但不输出了
                     else:
-                        # [Safe Window 机制]
-                        # 我们不能直接输出所有 buffer，因为 buffer 的末尾可能是 "</response>" 的一部分
-                        # 比如 buffer = "内容</res"，如果不处理直接输出，用户就看到了 "</res"，
-                        # 下次 buffer = "ponse>"，用户看到 "ponse>"。
-                        # 所以我们必须保留最后 len("</response>") - 1 个字符。
-                        safe_len = len("</response>") - 1
+                        # [优化版 Safe Window 机制]
+                        # 目标：仅拦截 </response>，尽可能减少普通文本的延迟
+                        # 策略：只有当 buffer 中包含 '<' 时才启用安全窗口，否则直接输出
                         
-                        if len(buffer) > safe_len:
-                            to_yield = buffer[:-safe_len]
-                            remainder = buffer[-safe_len:]
-                            
-                            # [Head Buffer 清洗机制]
-                            # 如果这是 response 的第一段输出（final_clean_response 为空），
-                            # 我们需要确保开头没有非法的 [edge:xxx] 标签。
-                            # 但流式切分可能导致 [edge:xxx] 被切开。
-                            # 简易策略：对于开头的内容，我们强制积攒到一定长度（比如 20 字符）或者是检测到 ']' 再输出？
-                            # 或者：直接在 to_yield 上应用正则。
-                            # 如果 [edge:xxx] 被切分在 to_yield 和 remainder 之间怎么办？
-                            # 比如 to_yield = "[edge", remainder = ":offset]"。
-                            # 这种情况极少，因为 safe_len 只有 10 字符。
-                            
-                            if not final_clean_response:
-                                # 这是开头。检查 to_yield 是否包含完整的标签
-                                # 如果 to_yield 很短且以 [ 开头，可能标签还没完。
-                                # 只有当 we are sure 标签结束了或者根本没标签时才输出。
-                                if "[" in to_yield and "]" not in to_yield:
-                                    # 看起来标签还没完，把 to_yield 加回 remainder
-                                    # 也就是 buffer 不动，继续积攒
-                                    pass 
-                                else:
-                                    # 标签完了，或者没标签。执行清洗。
-                                    cleaned = self._clean_content(to_yield)
-                                    yield cleaned
-                                    final_clean_response += cleaned
-                                    buffer = remainder
-                            else:
-                                # 不是开头，直接输出 to_yield (不需要再清洗 edge 标签了，因为它只出现在开头)
-                                yield to_yield
-                                final_clean_response += to_yield
-                                buffer = remainder
+                        target_tag = "</response>"
+                        safe_len = len(target_tag) # 11
+                        
+                        # 1. 如果 buffer 中完全没有 '<'，说明肯定不是 tag 的开始
+                        # 直接全部输出（除非还在 Head Buffer 阶段）
+                        if "<" not in buffer:
+                             if not final_clean_response:
+                                 # [Head Buffer 阶段]
+                                 # 即使没有 <，也可能是在等待 [emotion] 结束
+                                 if "[" in buffer and "]" not in buffer:
+                                     # 标签未闭合，继续积攒
+                                     pass
+                                 else:
+                                     # 没标签，或者标签已处理完（不应该，因为 handled in split? no）
+                                     # 这里处理：buffer = "Hello world"
+                                     cleaned = self._clean_content(buffer)
+                                     yield cleaned
+                                     final_clean_response += cleaned
+                                     buffer = ""
+                             else:
+                                 # [Tail Buffer 阶段]
+                                 # 没有 <，直接输出
+                                 yield buffer
+                                 final_clean_response += buffer
+                                 buffer = ""
+                        
+                        # 2. 如果 buffer 中有 '<'，可能是 </response> 的一部分
                         else:
-                            # buffer 太短，不够安全长度，先攒着
-                            pass
+                            # 仍然需要处理 Head Buffer (万一 [emotion] 和 < 混在一起)
+                            if not final_clean_response:
+                                 # Head Buffer 逻辑优先
+                                 if "[" in buffer and "]" not in buffer:
+                                     pass
+                                 else:
+                                     # 尝试输出，但要保留 < 之后的部分
+                                     # 找到最后一个 < 的位置
+                                     last_bracket_index = buffer.rfind("<")
+                                     
+                                     # 如果 < 后面太长了，超过了 target_tag，说明这个 < 不是我们要找的 tag
+                                     # (除非它是 <thought> 但这里只处理 response)
+                                     # 简单起见，我们还是用原来的 safe_len 逻辑来兜底，但只对 < 之后的部分敏感
+                                     
+                                     # 混合策略：
+                                     # 如果 buffer 长度超过 safe_len，我们可以安全地输出前面多余的部分
+                                     if len(buffer) > safe_len:
+                                         to_yield = buffer[:-safe_len]
+                                         remainder = buffer[-safe_len:]
+                                         
+                                         cleaned = self._clean_content(to_yield)
+                                         yield cleaned
+                                         final_clean_response += cleaned
+                                         buffer = remainder
+                                     else:
+                                         # buffer 还很短，先攒着
+                                         pass
+                            else:
+                                # [Tail Buffer 阶段] 且包含 <
+                                # 同样使用 Safe Window 策略，确保不切断 </response>
+                                if len(buffer) > safe_len:
+                                    to_yield = buffer[:-safe_len]
+                                    remainder = buffer[-safe_len:]
+                                    
+                                    yield to_yield
+                                    final_clean_response += to_yield
+                                    buffer = remainder
+                                else:
+                                    pass
                 
                 # 4. Fallback: 如果 buffer 过长且没有任何标签，说明模型没听话，直接输出
                 elif len(buffer) > 200 and not is_in_thought: # 增加 buffer 长度容忍度，等待 <thought> 结束
