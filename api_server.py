@@ -26,8 +26,12 @@ tts_service = TTSService()
 
 def sanitize_text_for_tts(text: str) -> str:
     """
-    清洗文本，去除不适合 TTS 朗读的符号（如 Emoji、Markdown、动作描写）
+    清洗文本，去除不适合 TTS 朗读的符号（如 Emoji、Markdown、动作描写、情感标签）
     """
+    # 0. [新增] 去除情感标签 [emotion:xxx] 和其他可能的标签
+    # 匹配 [key:value] 格式，防止 TTS 朗读 "bracket emotion happy bracket"
+    text = re.sub(r'\[\w+:\w+\]', '', text)
+    
     # 1. 去除 Emoji (简单范围匹配)
     # 这是一个比较宽泛的 regex，匹配常见 emoji 和图形符号
     text = re.sub(r'[\U00010000-\U0010ffff]', '', text)

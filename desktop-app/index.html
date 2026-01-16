@@ -264,7 +264,6 @@
                 const modelHeight = live2dModel.height;
                 
                 // 使用 app.screen 获取逻辑尺寸（CSS像素），避免高分屏下的坐标偏移问题
-                // app.view.width 是物理像素，app.screen.width 是逻辑像素
                 const screenWidth = app.screen.width;
                 const screenHeight = app.screen.height;
                 
@@ -272,15 +271,24 @@
                 const scaleX = screenWidth / modelWidth;
                 const scaleY = screenHeight / modelHeight;
                 
-                // 使用较小的比例以确保完全可见，并留出 5% 边距
-                let scale = Math.min(scaleX, scaleY) * 0.95;
+                // 使用较小的比例 (0.8) 以留出更多空白，避免视觉上“贴边”的感觉
+                let scale = Math.min(scaleX, scaleY) * 0.8;
                 
                 live2dModel.scale.set(scale);
                 
                 // 居中定位
-                // 使用逻辑尺寸计算
+                // 尝试设置锚点为中心 (如果模型支持)
+                // live2dModel.anchor.set(0.5); 
+                // 由于 Live2DModel 的 anchor 行为可能因版本而异，这里继续使用坐标计算确保稳健性
+                
+                // 水平居中
                 live2dModel.x = (screenWidth - (modelWidth * scale)) / 2;
-                live2dModel.y = (screenHeight - (modelHeight * scale)) * 0.5;
+                
+                // 垂直定位：
+                // 如果是宽屏（scaleX < scaleY），模型由宽度决定，垂直居中
+                // 如果是竖屏（scaleY < scaleX），模型由高度决定，垂直居中
+                // 这里统一垂直居中
+                live2dModel.y = (screenHeight - (modelHeight * scale)) / 2;
                 
                 console.log(`Resize: Screen ${screenWidth}x${screenHeight}, Model ${modelWidth}x${modelHeight}, Scale ${scale}, Pos ${live2dModel.x},${live2dModel.y}`);
             };
@@ -380,8 +388,8 @@
                         pendingText += data.content;
                         // 尝试匹配情感标签 [emotion:xxx] 或其他系统标签 [key:value]
                         // 考虑到标签可能分块到达，我们需要一定的 buffer
-                        // 正则：匹配开头的 [key:value] (允许冒号后有空格)
-                        const match = pendingText.match(/^\[(\w+):\s*(\w+)\]/);
+                        // 正则：匹配开头的 [key:value] (允许冒号后有空格，允许前面有空白字符)
+                        const match = pendingText.match(/^\s*\[(\w+):\s*(\w+)\]/);
                         if (match) {
                             const key = match[1];
                             const value = match[2];
@@ -404,9 +412,10 @@
                             pendingText = ""; // 清空 buffer
                         } else {
                             // 如果 buffer 还没匹配到
-                            // 1. 如果 buffer 根本不是以 [ 开头，说明没标签
+                            // 1. 如果 buffer 根本不是以空白或 [ 开头，说明没标签
                             // 2. 如果 buffer 长度超过了标签的最大可能长度 (比如 30)，说明没标签
-                            if (!pendingText.startsWith('[') || pendingText.length > 30) {
+                            // 更新：允许开头有空白
+                            if (!/^\s*\[/.test(pendingText) || pendingText.length > 40) {
                                 foundEmotion = true; // 放弃查找
                                 currentEchoMessageDiv.innerText += pendingText;
                                 pendingText = "";

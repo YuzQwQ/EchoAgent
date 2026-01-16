@@ -25,6 +25,21 @@ class EchoAgent:
         self.tools.register(MemoryCapabilityTool())
         self.tools.register(SystemSelfAwarenessTool())
 
+    def _clean_content(self, text: str) -> str:
+        """
+        清洗输出内容：
+        1. 替换非法的 [edge:xxx] 标签为 [emotion:idle]
+        2. 移除可能泄露的 <response> / </response> 标签
+        """
+        import re
+        # 1. 替换幻觉标签
+        text = re.sub(r'\[edge:\w+\]', '[emotion:idle]', text)
+        
+        # 2. 移除泄露的 XML 标签 (只是为了保险，正常逻辑应该已经切分掉了)
+        text = text.replace('<response>', '').replace('</response>', '')
+        
+        return text
+
     def _process_stream_response(self, context) -> Generator[str, None, str]:
         """
         处理流式响应，支持 <thought> 标签过滤
@@ -58,19 +73,19 @@ class EchoAgent:
                     has_started_response = True
                     buffer = post_response # 剩余 buffer 是 response 内容
                 
-                # [新增] 容错：如果检测到 </thought> 结束但没检测到 <response>，且 buffer 里有后续内容，
-                # 强制进入 response 模式（防止模型漏写 <response> 标签）
+                # [新增] 容错：如果检测到 </thought> 结束但没检测到 <response>
+                # 我们不再强制进入 response 模式，而是退出 thought 模式，让后续逻辑（检测 <response> 或 Fallback）自然处理
+                # 这样可以避免 "eager consumption" 导致的 <response> 标签泄露问题
                 elif "</thought>" in buffer and not has_started_response:
                      pre_thought, post_thought = buffer.split("</thought>", 1)
-                     # 确认 post_thought 不仅仅是空字符
-                     if post_thought.strip():
-                         print("⚠️ [Echo Logic] Missing <response> tag, auto-starting response.")
-                         thought_content = pre_thought.replace('<thought>', '').strip()
-                         print(f"\n🧠 [Echo Thought]: {thought_content}\n")
-                         
-                         is_in_thought = False
-                         has_started_response = True
-                         buffer = post_thought.lstrip() # 去除可能的换行
+                     
+                     print("⚠️ [Echo Logic] </thought> detected without <response>. Exiting thought mode.")
+                     thought_content = pre_thought.replace('<thought>', '').strip()
+                     print(f"\n🧠 [Echo Thought]: {thought_content}\n")
+                     
+                     is_in_thought = False
+                     # has_started_response 保持 False，等待真正的 <response> 或 Fallback
+                     buffer = post_thought.lstrip() 
 
                 # 3. 处理 Response 内容
                 if has_started_response:
@@ -78,16 +93,63 @@ class EchoAgent:
                     if "</response>" in buffer:
                         content, remainder = buffer.split("</response>", 1)
                         if content:
+                            # 累积到 final，稍后统一清洗头部（如果这是第一段）
+                            # 但为了流式体验，我们不能一直攒着。
+                            # 策略：如果 final_clean_response 为空（说明是开头），先进行头部清洗
+                            
+                            # 这里是结束了，直接处理
+                            if not final_clean_response:
+                                content = self._clean_content(content)
+                            
                             yield content
                             final_clean_response += content
                         # 遇到结束标签，清空 buffer 并停止生成
                         buffer = ""
                         # break # 继续消耗流以保持连接状态，但不输出了
                     else:
-                        # 没遇到结束标签，直接输出 buffer
-                        yield buffer
-                        final_clean_response += buffer
-                        buffer = ""
+                        # [Safe Window 机制]
+                        # 我们不能直接输出所有 buffer，因为 buffer 的末尾可能是 "</response>" 的一部分
+                        # 比如 buffer = "内容</res"，如果不处理直接输出，用户就看到了 "</res"，
+                        # 下次 buffer = "ponse>"，用户看到 "ponse>"。
+                        # 所以我们必须保留最后 len("</response>") - 1 个字符。
+                        safe_len = len("</response>") - 1
+                        
+                        if len(buffer) > safe_len:
+                            to_yield = buffer[:-safe_len]
+                            remainder = buffer[-safe_len:]
+                            
+                            # [Head Buffer 清洗机制]
+                            # 如果这是 response 的第一段输出（final_clean_response 为空），
+                            # 我们需要确保开头没有非法的 [edge:xxx] 标签。
+                            # 但流式切分可能导致 [edge:xxx] 被切开。
+                            # 简易策略：对于开头的内容，我们强制积攒到一定长度（比如 20 字符）或者是检测到 ']' 再输出？
+                            # 或者：直接在 to_yield 上应用正则。
+                            # 如果 [edge:xxx] 被切分在 to_yield 和 remainder 之间怎么办？
+                            # 比如 to_yield = "[edge", remainder = ":offset]"。
+                            # 这种情况极少，因为 safe_len 只有 10 字符。
+                            
+                            if not final_clean_response:
+                                # 这是开头。检查 to_yield 是否包含完整的标签
+                                # 如果 to_yield 很短且以 [ 开头，可能标签还没完。
+                                # 只有当 we are sure 标签结束了或者根本没标签时才输出。
+                                if "[" in to_yield and "]" not in to_yield:
+                                    # 看起来标签还没完，把 to_yield 加回 remainder
+                                    # 也就是 buffer 不动，继续积攒
+                                    pass 
+                                else:
+                                    # 标签完了，或者没标签。执行清洗。
+                                    cleaned = self._clean_content(to_yield)
+                                    yield cleaned
+                                    final_clean_response += cleaned
+                                    buffer = remainder
+                            else:
+                                # 不是开头，直接输出 to_yield (不需要再清洗 edge 标签了，因为它只出现在开头)
+                                yield to_yield
+                                final_clean_response += to_yield
+                                buffer = remainder
+                        else:
+                            # buffer 太短，不够安全长度，先攒着
+                            pass
                 
                 # 4. Fallback: 如果 buffer 过长且没有任何标签，说明模型没听话，直接输出
                 elif len(buffer) > 200 and not is_in_thought: # 增加 buffer 长度容忍度，等待 <thought> 结束
@@ -95,28 +157,38 @@ class EchoAgent:
                     # 即使是 Fallback，也要尝试去除 </response>
                     if "</response>" in buffer:
                          content, _ = buffer.split("</response>", 1)
-                         yield content
-                         final_clean_response += content
+                         cleaned = self._clean_content(content)
+                         yield cleaned
+                         final_clean_response += cleaned
                          buffer = ""
                     else:
-                         yield buffer
-                         final_clean_response += buffer
+                         cleaned = self._clean_content(buffer)
+                         yield cleaned
+                         final_clean_response += cleaned
                          buffer = ""
 
             # 流结束后的清理
             if has_started_response and buffer and "</response>" not in buffer:
-                yield buffer
-                final_clean_response += buffer
+                # 剩下的 buffer 肯定不包含完整的 </response> (否则上面就切了)
+                # 但可能包含 </re...
+                # 既然流结束了，说明这些就是内容，不是标签（否则标签不完整）
+                # 除非模型断在这里了。
+                # 无论如何，全部输出。
+                cleaned = self._clean_content(buffer)
+                yield cleaned
+                final_clean_response += cleaned
             elif not has_started_response and buffer:
                  # 如果全程没标签，且 buffer 还有剩，输出它
                  # 再次尝试去除 </response> (针对 Fallback 情况)
                  if "</response>" in buffer:
                      content, _ = buffer.split("</response>", 1)
-                     yield content
-                     final_clean_response += content
+                     cleaned = self._clean_content(content)
+                     yield cleaned
+                     final_clean_response += cleaned
                  elif "<thought>" not in buffer:
-                     yield buffer
-                     final_clean_response += buffer
+                     cleaned = self._clean_content(buffer)
+                     yield cleaned
+                     final_clean_response += cleaned
 
         except Exception as e:
             error_msg = f"\n\n(Error: {str(e)})"
@@ -169,7 +241,8 @@ class EchoAgent:
             "2. **拒绝复读**：如果观点已表达过，请深入细节或换个角度，不要重复。\n"
             "3. **收敛话题**：除非用户发起新话题，否则请聚焦当前话题，不要无故发散。\n"
             "4. **执行 CoT**：必须先输出 <thought>，再输出 <response>。\n"
-            "5. **情感表达**：在 <response> 的**开头**，必须包含一个情感标签，格式为 [emotion:xxx]，其中 xxx 必须是以下之一：happy, sad, angry, surprised, shy, idle。严禁编造其他标签（如 edge, computational 等）。"
+            "5. **情感表达**：在 <response> 的**开头**，必须包含一个情感标签，格式为 [emotion:xxx]，其中 xxx 必须是以下之一：happy, sad, angry, surprised, shy, idle。严禁编造其他标签（如 edge, computational 等）。\n"
+            "6. **严禁 Emoji**：回复中绝对禁止包含任何 Emoji 表情符号，有了 Live2D 形象，不需要 Emoji 来表达情绪。"
         )
         reinforcement_prompt = {
             "role": "system",
@@ -233,7 +306,7 @@ class EchoAgent:
         reinforcement_content = (
             "【视觉逻辑守则】\n"
             "1. **基于观察**：仅根据[图片内容描述]回应。\n"
-            "2. **风格保持**：微毒舌、日常化、Emoji 适度。\n"
+            "2. **风格保持**：微毒舌、日常化、严禁 Emoji。\n"
             "3. **执行 CoT**：必须先输出 <thought> 分析图片要点，再输出 <response>。"
         )
         reinforcement_prompt = {
