@@ -253,27 +253,48 @@
                 live2dModel.internalModel.motionManager.startRandomMotion('Tap');
             });
 
-            // 调整模型大小和位置
-            // 为了让模型更大，我们尝试覆盖更多高度，并允许稍微裁剪（如果需要）或者只是撑满
-            const scaleX = app.view.width / live2dModel.width;
-            const scaleY = app.view.height / live2dModel.height;
-            
-            // 使用较大的比例，让它尽可能大
-            let scale = Math.min(scaleX, scaleY) * 0.95;
-            
-            // 如果容器很宽，尝试限制最大比例以免像素化（虽然 Live2D 是矢量的，但在 Canvas 中有纹理限制）
-            // 但对于 Hiyori 这种全身模型，通常高度是瓶颈
-            
-            live2dModel.scale.set(scale);
-            live2dModel.x = (app.view.width - live2dModel.width) / 2;
-            
-            // 调整垂直位置，使其站在底部或中间
-            // Hiyori 模型原点通常在中心或脚底，视模型而定。
-            // 这里的 y 计算逻辑可能需要微调。如果模型原点在左上角 (0,0):
-            // (canvas高 - 模型高) / 2 会垂直居中
-            // * 1.0 会沉底 (假设 anchor 是 0,0)
-            
-            live2dModel.y = (app.view.height - live2dModel.height) * 0.5; // 垂直居中，稍微偏下
+            // 调整模型大小和位置的函数
+            const resizeModel = () => {
+                if (!live2dModel) return;
+                
+                // 重置缩放以获取原始尺寸进行计算
+                live2dModel.scale.set(1);
+                
+                const modelWidth = live2dModel.width;
+                const modelHeight = live2dModel.height;
+                
+                // 使用 app.screen 获取逻辑尺寸（CSS像素），避免高分屏下的坐标偏移问题
+                // app.view.width 是物理像素，app.screen.width 是逻辑像素
+                const screenWidth = app.screen.width;
+                const screenHeight = app.screen.height;
+                
+                // 计算适配比例
+                const scaleX = screenWidth / modelWidth;
+                const scaleY = screenHeight / modelHeight;
+                
+                // 使用较小的比例以确保完全可见，并留出 5% 边距
+                let scale = Math.min(scaleX, scaleY) * 0.95;
+                
+                live2dModel.scale.set(scale);
+                
+                // 居中定位
+                // 使用逻辑尺寸计算
+                live2dModel.x = (screenWidth - (modelWidth * scale)) / 2;
+                live2dModel.y = (screenHeight - (modelHeight * scale)) * 0.5;
+                
+                console.log(`Resize: Screen ${screenWidth}x${screenHeight}, Model ${modelWidth}x${modelHeight}, Scale ${scale}, Pos ${live2dModel.x},${live2dModel.y}`);
+            };
+
+            // 初始调整
+            resizeModel();
+
+            // 监听窗口调整事件
+            window.addEventListener('resize', () => {
+                // 延迟一小会儿确保 Canvas 已经 resize
+                setTimeout(resizeModel, 10);
+            });
+            // 也可以监听 PIXI renderer 的 resize
+            app.renderer.on('resize', resizeModel);
 
             // 启用口型同步
             live2dModel.internalModel.motionManager.stopAllMotions();
