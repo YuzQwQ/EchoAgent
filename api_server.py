@@ -169,12 +169,20 @@ async def websocket_endpoint(websocket: WebSocket):
                 # 流式回复 + TTS 分句缓冲
                 full_response = ""
                 tts_buffer = ""
+                tts_queue = asyncio.Queue()
                 
-                # 优化分句正则：更严格的切分，支持换行作为切分点
-                # 排除省略号(...)以免切碎句子
-                sentence_endings = re.compile(r'(?<!\.)[.!?。？！\n]+')
+                # 启动 TTS 消费者任务 (Single Worker)
+                tts_task = asyncio.create_task(tts_worker(websocket, tts_queue, tts_service))
+
+                # 优化分句正则：更细粒度的切分，支持逗号、分号，但保留句子结构
+                # 匹配：句号、问号、感叹号、换行符、逗号、分号
+                sentence_endings = re.compile(r'(?<!\.)[.!?。？！\n,，;；]+')
+                
+                # 最小切分长度阈值 (防止切太碎)
+                MIN_SENTENCE_LENGTH = 8
 
                 try:
+                    chunk_id = 0
                     for chunk in agent.chat(user_input):
                         full_response += chunk
                         tts_buffer += chunk
@@ -186,28 +194,31 @@ async def websocket_endpoint(websocket: WebSocket):
                             "is_final": False
                         })
 
-                        # TTS 处理逻辑
+                        # TTS 生产者逻辑
                         if enable_tts:
-                            # 检查是否有句子结束符
+                            # 1. 尝试寻找切分点
                             match = sentence_endings.search(tts_buffer)
                             if match:
-                                # 找到结束符，切分句子
+                                # 找到结束符
                                 end_pos = match.end()
                                 raw_sentence = tts_buffer[:end_pos].strip()
-                                tts_buffer = tts_buffer[end_pos:] # 剩余部分留给下一次
                                 
-                                # 清洗文本（去 Emoji，去动作描写）
-                                clean_sentence = sanitize_text_for_tts(raw_sentence)
-                                
-                                if clean_sentence:
-                                    # 生成语音
-                                    audio_base64 = await tts_service.text_to_speech(clean_sentence)
+                                # 2. 智能合并策略
+                                # 只有当 当前句子长度 >= 阈值，或者 缓冲区太长了，才切分
+                                # 否则继续积攒，直到下一个标点或结束
+                                if len(raw_sentence) >= MIN_SENTENCE_LENGTH or len(tts_buffer) > 50:
+                                    tts_buffer = tts_buffer[end_pos:] # 剩余部分留给下一次
                                     
-                                    if audio_base64:
-                                        await websocket.send_json({
-                                            "type": "audio",
-                                            "content": audio_base64
-                                        })
+                                    # 清洗文本
+                                    clean_sentence = sanitize_text_for_tts(raw_sentence)
+                                    
+                                    if clean_sentence:
+                                        # 放入队列，生产者不等待
+                                        await tts_queue.put((chunk_id, clean_sentence))
+                                        chunk_id += 1
+                                else:
+                                    # 还没到阈值，继续攒着
+                                    pass
 
                         await asyncio.sleep(0.01)
                     
@@ -215,14 +226,15 @@ async def websocket_endpoint(websocket: WebSocket):
                     if enable_tts and tts_buffer.strip():
                         raw_sentence = tts_buffer.strip()
                         clean_sentence = sanitize_text_for_tts(raw_sentence)
-                        
                         if clean_sentence:
-                            audio_base64 = await tts_service.text_to_speech(clean_sentence)
-                            if audio_base64:
-                                await websocket.send_json({
-                                    "type": "audio",
-                                    "content": audio_base64
-                                })
+                            await tts_queue.put((chunk_id, clean_sentence))
+                            chunk_id += 1
+                    
+                    # 发送哨兵，通知 Worker 结束
+                    if enable_tts:
+                        await tts_queue.put(None)
+                        # 等待 TTS 任务全部完成
+                        await tts_task
 
                     # 发送结束标记
                     await websocket.send_json({
@@ -238,12 +250,53 @@ async def websocket_endpoint(websocket: WebSocket):
                         "type": "error",
                         "content": error_msg
                     })
-                    
+                    # 确保取消后台任务
+                    if 'tts_task' in locals() and not tts_task.done():
+                        tts_task.cancel()
+                        
     except WebSocketDisconnect:
         print("WebSocket disconnected")
     except Exception as e:
         print(f"WebSocket error: {e}")
+    finally:
+        # 确保取消后台任务 (双重保险)
+        pass
 
+# TTS 消费者 Worker
+async def tts_worker(websocket: WebSocket, queue: asyncio.Queue, service: TTSService):
+    """
+    单线程消费 TTS 任务队列，确保 GPU 不过载
+    """
+    while True:
+        item = await queue.get()
+        if item is None:
+            queue.task_done()
+            break
+            
+        chunk_id, text = item
+        try:
+            # 串行调用 TTS (耗时操作)
+            audio_base64 = await service.text_to_speech(text)
+            
+            if audio_base64:
+                await websocket.send_json({
+                    "type": "audio_stream", # 新类型，支持流式
+                    "sequence_id": chunk_id,
+                    "content": audio_base64
+                })
+        except Exception as e:
+            error_msg = f"TTS Worker Error: {str(e)}"
+            print(error_msg)
+            try:
+                await websocket.send_json({
+                    "type": "error",
+                    "content": "语音生成失败，请检查 TTS 服务连接"
+                })
+            except:
+                pass # 如果 websocket 断了就不管了
+        finally:
+            queue.task_done()
+                    
 @app.get("/health")
 def health_check():
     return {"status": "ok", "model": config.PRIMARY_MODEL_NAME}

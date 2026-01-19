@@ -510,6 +510,12 @@
                     userDiv.innerText = `🎤 ${data.content}`;
                     chatContainer.appendChild(userDiv);
                     scrollToBottom();
+                } else if (data.type === 'audio_stream') {
+                    // 流水线音频处理
+                    handleAudioStream(data);
+                } else if (data.type === 'audio') {
+                    // 兼容旧版逻辑 (可选，若后端已完全切换可移除)
+                    playAudio(data.content);
                 } else if (data.type === 'chunk') {
                     if (!currentEchoMessageDiv) {
                         currentEchoMessageDiv = createMessageDiv('echo');
@@ -517,6 +523,10 @@
                         // 新消息开始，重置情感检测状态
                         pendingText = "";
                         foundEmotion = false;
+                        // 重置音频播放序号
+                        nextSequenceId = 0;
+                        audioBufferQueue = [];
+                        isPlayingAudio = false;
                     }
 
                     if (!foundEmotion) {
@@ -588,9 +598,159 @@
         };
     }
 
+    // 语音播放相关
+    let audioContext = null; // 复用 AudioContext
+    let nextSequenceId = 0; // 期望播放的下一段音频序号
+    let audioBufferQueue = []; // 音频缓冲队列 (按序存储)
+    
+    // 初始化 AudioContext (必须在用户交互后)
+    function initAudioContext() {
+        if (!audioContext) {
+            audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        }
+    }
+
+    // 处理流式音频
+    function handleAudioStream(data) {
+        const { sequence_id, content } = data;
+        
+        // 1. 将数据存入队列
+        audioBufferQueue.push({
+            id: sequence_id,
+            content: content
+        });
+        
+        // 2. 排序 (防止网络乱序)
+        audioBufferQueue.sort((a, b) => a.id - b.id);
+        
+        // 3. 尝试播放
+        tryPlayNext();
+    }
+    
+    // 尝试播放下一段
+    function tryPlayNext() {
+        if (isPlayingAudio) return; // 正在播，别插嘴
+        if (audioBufferQueue.length === 0) return; // 没货了
+        
+        // 检查队首是否是我们期望的下一段
+        const nextItem = audioBufferQueue[0];
+        if (nextItem.id !== nextSequenceId) {
+            console.log(`Waiting for sequence ${nextSequenceId}, but got ${nextItem.id}`);
+            return; // 还没等到，继续等
+        }
+        
+        // 取出并播放
+        audioBufferQueue.shift();
+        playAudioStream(nextItem.content);
+    }
+    
+    function playAudioStream(base64Data) {
+        isPlayingAudio = true;
+        initAudioContext();
+        
+        const audioData = base64ToArrayBuffer(base64Data);
+        
+        audioContext.decodeAudioData(audioData, (buffer) => {
+            const source = audioContext.createBufferSource();
+            source.buffer = buffer;
+            source.connect(audioContext.destination);
+            
+            // 口型同步: 这里的简单实现是用音量驱动，或者直接随机动
+            // 为了简化，我们假设每播放一段音频，就做随机口型
+            startLipSync(buffer.duration);
+
+            source.onended = () => {
+                isPlayingAudio = false;
+                stopLipSync();
+                nextSequenceId++; // 准备播下一段
+                tryPlayNext(); // 尝试无缝衔接
+            };
+            
+            source.start(0);
+        }, (e) => {
+            console.error("Error decoding audio data", e);
+            isPlayingAudio = false;
+            stopLipSync();
+            nextSequenceId++;
+            tryPlayNext();
+        });
+    }
+
+    // 简单的口型同步 (基于时间)
+    let currentLipSyncTimer = null;
+
+    function startLipSync(duration) {
+        if (!live2dModel) return;
+        
+        // 先清理旧的
+        stopLipSync();
+
+        const startTime = Date.now();
+        const durationMs = duration * 1000;
+        
+        currentLipSyncTimer = setInterval(() => {
+            const elapsed = Date.now() - startTime;
+            if (elapsed >= durationMs) {
+                stopLipSync();
+                return;
+            }
+            
+            // 随机张嘴 0.0 ~ 0.8
+            const value = Math.random() * 0.8; 
+            if (live2dModel && live2dModel.internalModel) {
+                live2dModel.internalModel.coreModel.setParameterValueById('ParamMouthOpenY', value);
+            }
+            
+        }, 100); // 每100ms更新一次
+    }
+
+    function stopLipSync() {
+        if (currentLipSyncTimer) {
+            clearInterval(currentLipSyncTimer);
+            currentLipSyncTimer = null;
+        }
+        if (live2dModel && live2dModel.internalModel) {
+            live2dModel.internalModel.coreModel.setParameterValueById('ParamMouthOpenY', 0);
+        }
+    }
+
+    function base64ToArrayBuffer(base64) {
+        const binaryString = window.atob(base64);
+        const len = binaryString.length;
+        const bytes = new Uint8Array(len);
+        for (let i = 0; i < len; i++) {
+            bytes[i] = binaryString.charCodeAt(i);
+        }
+        return bytes.buffer;
+    }
+
+    // 兼容旧版 playAudio (非流式)
+    function playAudio(base64Data) {
+        const audio = new Audio("data:audio/wav;base64," + base64Data);
+        audio.play();
+        
+        // 简单的口型同步 (仅针对旧版)
+        if (live2dModel) {
+             audio.onplay = () => {
+                 // 简单模拟: 播放期间随机张嘴
+                 const interval = setInterval(() => {
+                     if (audio.paused) {
+                         clearInterval(interval);
+                         live2dModel.internalModel.coreModel.setParameterValueById('ParamMouthOpenY', 0);
+                     } else {
+                         live2dModel.internalModel.coreModel.setParameterValueById('ParamMouthOpenY', Math.random());
+                     }
+                 }, 100);
+             };
+        }
+    }
+    
     function sendMessage() {
         const text = messageInput.value.trim();
         if (!text || !isConnected) return;
+
+        // 重置音频播放状态，打断之前的播放
+        resetAudioState();
 
         // 1. 显示用户消息
         const userDiv = createMessageDiv('user');
@@ -627,109 +787,84 @@
         chatContainer.scrollTop = chatContainer.scrollHeight;
     }
 
-    // 音频播放队列逻辑
-    function queueAudio(base64Data) {
-        audioQueue.push(base64Data);
-        if (!isPlayingAudio) {
-            playNextAudio();
+    // --- 音频流处理逻辑 ---
+    
+    function resetAudioState() {
+        // 停止当前播放（如果可能）
+        if (isPlayingAudio) {
+            // 这里很难直接停止正在播放的 Audio 对象，除非我们全局持有它
+            // 但我们可以清空队列，这样当前这段播完就不会播下一段了
+            // 也可以调用 stopLipSync
+            stopLipSync();
         }
+        audioBufferQueue = [];
+        nextSequenceId = 0;
+        isPlayingAudio = false;
     }
 
-    function playNextAudio() {
-        if (audioQueue.length === 0) {
-            isPlayingAudio = false;
+    function handleAudioStream(data) {
+        const { sequence_id, content } = data;
+        // 放入缓冲区
+        audioBufferQueue.push({id: sequence_id, content: content});
+        // 排序：按 sequence_id 从小到大
+        audioBufferQueue.sort((a, b) => a.id - b.id);
+        
+        // 尝试播放
+        tryPlayNext();
+    }
+
+    function tryPlayNext() {
+        if (isPlayingAudio) return; // 正在播放中，等待 ended 事件触发下一次
+        if (audioBufferQueue.length === 0) return; // 队列为空
+
+        // 检查队首是否是我们期待的下一段
+        const nextItem = audioBufferQueue[0];
+        if (nextItem.id !== nextSequenceId) {
+            console.log(`Waiting for sequence ${nextSequenceId}, but got ${nextItem.id} (buffered: ${audioBufferQueue.length})`);
             return;
         }
-        
+
+        // 取出并播放
+        audioBufferQueue.shift();
+        nextSequenceId++; // 期待下一段
+        playAudioStream(nextItem.content);
+    }
+
+    function playAudioStream(base64Data) {
         isPlayingAudio = true;
-        const base64Data = audioQueue.shift();
-        const audio = new Audio("data:audio/mpeg;base64," + base64Data);
+        const audio = new Audio("data:audio/wav;base64," + base64Data); // 注意：GPT-SoVITS 通常返回 wav 或 mp3，这里假设 wav 兼容性更好
         
         audio.onended = () => {
             isPlayingAudio = false;
             stopLipSync();
-            playNextAudio();
+            // 简单策略：直接播放下一段，无 Crossfade
+            tryPlayNext();
         };
         
         audio.onerror = (e) => {
             console.error("Audio playback error", e);
+            isPlayingAudio = false;
             stopLipSync();
-            playNextAudio(); // 出错继续播放下一段
+            tryPlayNext(); // 容错：跳过错误的，尝试下一段
         };
         
         audio.play().then(() => {
             startLipSync(audio);
         }).catch(e => {
             console.error("Auto-play prevented", e);
-            // 可能是浏览器策略拦截，尝试继续
-            playNextAudio();
+            isPlayingAudio = false;
+            tryPlayNext();
         });
     }
 
-    // --- 口型同步逻辑 ---
-    let audioContext = null;
-    let analyser = null;
-    let dataArray = null;
-    let lipSyncFrameId = null;
-    let source = null;
-
-    function startLipSync(audioElement) {
-        if (!live2dModel) return;
-
-        if (!audioContext) {
-            audioContext = new (window.AudioContext || window.webkitAudioContext)();
-            analyser = audioContext.createAnalyser();
-            analyser.fftSize = 256;
-            dataArray = new Uint8Array(analyser.frequencyBinCount);
-        }
-
-        // 连接音频源
-        try {
-            if (source) {
-                source.disconnect();
-            }
-            source = audioContext.createMediaElementSource(audioElement);
-            source.connect(analyser);
-            analyser.connect(audioContext.destination);
-        } catch (e) {
-            console.warn("Audio source connection issue:", e);
-        }
-
-        function updateLipSync() {
-            if (!isPlayingAudio) return;
-
-            analyser.getByteFrequencyData(dataArray);
-            
-            // 计算平均音量
-            let sum = 0;
-            for(let i = 0; i < dataArray.length; i++) {
-                sum += dataArray[i];
-            }
-            const average = sum / dataArray.length;
-            
-            // 映射到 0.0 - 1.0 的开口度
-            let openY = Math.min(1.0, average / 30.0);
-            
-            // 设置 Live2D 参数
-            if (live2dModel && live2dModel.internalModel) {
-                 live2dModel.internalModel.coreModel.setParameterValueById('ParamMouthOpenY', openY);
-            }
-
-            lipSyncFrameId = requestAnimationFrame(updateLipSync);
-        }
-
-        updateLipSync();
+    // 旧的音频播放队列逻辑 (保留以兼容 audio 类型)
+    function queueAudio(base64Data) {
+        // 将其视为 sequence_id = 0 的流
+        resetAudioState();
+        handleAudioStream({ sequence_id: 0, content: base64Data });
     }
 
-    function stopLipSync() {
-        if (lipSyncFrameId) {
-            cancelAnimationFrame(lipSyncFrameId);
-            lipSyncFrameId = null;
-        }
-        if (live2dModel && live2dModel.internalModel) {
-            live2dModel.internalModel.coreModel.setParameterValueById('ParamMouthOpenY', 0);
-        }
-    }
+
 
     messageInput.addEventListener('input', function() {
         this.style.height = 'auto';
