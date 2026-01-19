@@ -1,6 +1,29 @@
 from core.tools.base import BaseTool
 from config import config
 import os
+import subprocess
+
+class ProjectHistoryTool(BaseTool):
+    def __init__(self):
+        description = (
+            "项目历史记录工具。用于查询项目的最近变更和 Git 提交记录。"
+            "当用户询问'最近更新了什么'或'你都知道哪些新功能'时，请使用此工具查看实际的代码变更记录。"
+        )
+        super().__init__("ProjectHistory", description)
+
+    def execute(self, **kwargs):
+        try:
+            # 运行 git log 获取最近 10 条提交
+            result = subprocess.run(
+                ['git', 'log', '-n', '10', '--pretty=format:%h - %s (%cr)'],
+                capture_output=True,
+                text=True,
+                check=True,
+                cwd=os.getcwd() # 确保在项目根目录运行
+            )
+            return f"【最近 10 条项目变更记录】\n{result.stdout}"
+        except Exception as e:
+            return f"无法获取项目历史: {str(e)} (可能未安装 git 或不是 git 仓库)"
 
 class VisionCapabilityTool(BaseTool):
     def __init__(self):

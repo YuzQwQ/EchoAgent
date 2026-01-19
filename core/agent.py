@@ -3,7 +3,13 @@ from core.llm_service import LLMService
 from core.vision_service import VisionService
 from core.memory import MemoryManager
 from core.tools.base import ToolRegistry
-from core.tools.system_tools import VisionCapabilityTool, TTSCapabilityTool, MemoryCapabilityTool, SystemSelfAwarenessTool
+from core.tools.system_tools import (
+    VisionCapabilityTool, 
+    TTSCapabilityTool, 
+    MemoryCapabilityTool, 
+    SystemSelfAwarenessTool,
+    ProjectHistoryTool
+)
 from config import config
 import random
 import copy
@@ -24,6 +30,7 @@ class EchoAgent:
         self.tools.register(TTSCapabilityTool())
         self.tools.register(MemoryCapabilityTool())
         self.tools.register(SystemSelfAwarenessTool())
+        self.tools.register(ProjectHistoryTool())
 
     def _clean_content(self, text: str) -> str:
         """

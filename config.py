@@ -34,8 +34,14 @@ class Config:
     VISION_MODEL_BASE_URL = os.getenv("VISION_MODEL_BASE_URL", "https://api.siliconflow.cn/v1")
     VISION_MODEL = os.getenv("VISION_MODEL", "qwen-vl-max")
 
+    # TTS Config
+    TTS_PROVIDER = os.getenv("TTS_PROVIDER", "edge") # edge, gpt-sovits
+    
     # Edge TTS Config
     EDGE_TTS_VOICE = os.getenv("EDGE_TTS_VOICE", "zh-CN-XiaoyiNeural")
+
+    # GPT-SoVITS Config
+    GPT_SOVITS_URL = os.getenv("GPT_SOVITS_URL", "http://127.0.0.1:9880/tts")
 
     # Agent Config记忆设置
     HISTORY_FILE = os.path.join(os.getcwd(), "conversation.json")

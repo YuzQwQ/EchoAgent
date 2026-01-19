@@ -8,6 +8,8 @@ import asyncio
 import json
 import base64
 import re
+import speech_recognition as sr
+import io
 
 app = FastAPI(title="Echo API Service")
 
@@ -29,8 +31,8 @@ def sanitize_text_for_tts(text: str) -> str:
     清洗文本，去除不适合 TTS 朗读的符号（如 Emoji、Markdown、动作描写、情感标签）
     """
     # 0. [新增] 去除情感标签 [emotion:xxx] 和其他可能的标签
-    # 匹配 [key:value] 格式，防止 TTS 朗读 "bracket emotion happy bracket"
-    text = re.sub(r'\[\w+:\w+\]', '', text)
+    # 匹配 [key:value] 格式，更宽泛地匹配 value 部分，防止特殊字符漏网
+    text = re.sub(r'\[\w+:[^\]]+\]', '', text)
     
     # 1. 去除 Emoji (简单范围匹配)
     # 这是一个比较宽泛的 regex，匹配常见 emoji 和图形符号
@@ -64,8 +66,59 @@ async def websocket_endpoint(websocket: WebSocket):
             message_data = json.loads(data)
             
             user_input = message_data.get("content", "")
-            msg_type = message_data.get("type", "text") # text or image
+            msg_type = message_data.get("type", "text") # text, image, audio
             enable_tts = message_data.get("enable_tts", False) # 接收前端开关状态
+
+            # 处理语音消息 (STT)
+            if msg_type == "audio":
+                try:
+                    # 1. 解码 Base64
+                    audio_data_str = user_input
+                    if "base64," in audio_data_str:
+                        _, encoded = audio_data_str.split("base64,", 1)
+                        audio_bytes = base64.b64decode(encoded)
+                    else:
+                        audio_bytes = base64.b64decode(audio_data_str)
+                    
+                    # 2. 使用 SpeechRecognition 处理
+                    r = sr.Recognizer()
+                    # 这里的 BytesIO 必须包含完整的 WAV 文件数据（含头信息）
+                    with sr.AudioFile(io.BytesIO(audio_bytes)) as source:
+                        audio = r.record(source)
+                    
+                    # 3. 调用 Google STT (需联网)
+                    print("Recognizing speech...")
+                    # show_all=False 返回最佳结果字符串
+                    # 使用 run_in_executor 避免阻塞事件循环
+                    loop = asyncio.get_running_loop()
+                    text = await loop.run_in_executor(None, lambda: r.recognize_google(audio, language="zh-CN"))
+                    print(f"Recognized text: {text}")
+                    
+                    if text:
+                        user_input = text
+                        msg_type = "text" # 转为文本处理流程
+                        
+                        # 告诉前端识别结果，用于显示用户消息
+                        await websocket.send_json({
+                            "type": "user_input", 
+                            "content": text
+                        })
+                    else:
+                        await websocket.send_json({"type": "error", "content": "未能识别出语音"})
+                        continue
+                        
+                except sr.UnknownValueError:
+                    print("STT: UnknownValueError")
+                    await websocket.send_json({"type": "error", "content": "听不清，请再说一遍"})
+                    continue
+                except sr.RequestError as e:
+                    print(f"STT: RequestError {e}")
+                    await websocket.send_json({"type": "error", "content": "语音服务连接失败，请检查网络"})
+                    continue
+                except Exception as e:
+                    print(f"STT Error: {e}")
+                    await websocket.send_json({"type": "error", "content": f"语音处理错误: {str(e)}"})
+                    continue
 
             if not user_input and msg_type == "text":
                 continue
