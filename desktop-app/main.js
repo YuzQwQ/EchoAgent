@@ -10,19 +10,30 @@ let apiProcess;
 
 function createWindow() {
   mainWindow = new BrowserWindow({
-    width: 1000,
-    height: 800,
+    width: 350,  // 瘦身：只展示人物
+    height: 600,
+    frame: false,       // 无边框
+    transparent: true,  // 透明背景
+    alwaysOnTop: true,  // 置顶
+    hasShadow: false,   // 去掉系统阴影
+    resizable: true,    // 允许调整大小
+    skipTaskbar: false, // 任务栏可见（方便找回，也可以设为true隐藏）
+    fullscreenable: false, // 禁止全屏 (防止 F11 误触导致无法操作)
+    maximizable: false,    // 禁止最大化
     webPreferences: {
       nodeIntegration: true,
       contextIsolation: false,
-      webSecurity: false // 临时禁用 webSecurity 以允许加载本地资源 (Live2D JSON)
+      webSecurity: false
     }
   });
 
+  // 移除默认菜单 (也会禁用 F11 等快捷键)
+  mainWindow.setMenu(null);
+
   mainWindow.loadFile('index.html');
   
-  // 开发模式下打开 DevTools
-  mainWindow.webContents.openDevTools();
+  // 开发模式下打开 DevTools (调试时取消注释)
+  mainWindow.webContents.openDevTools({ mode: 'detach' });
 
   mainWindow.on('closed', function () {
     mainWindow = null;

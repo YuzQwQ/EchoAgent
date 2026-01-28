@@ -1,7 +1,7 @@
 import json
 import os
 from typing import List, Dict, Any, Optional
-from config import config
+from config import config, load_system_prompt
 
 class MemoryManager:
     def __init__(self, file_path: str = config.HISTORY_FILE):
@@ -82,8 +82,8 @@ class MemoryManager:
         
         context = []
         
-        # 1. System Prompt
-        context.append({"role": "system", "content": config.SYSTEM_PROMPT})
+        # 1. System Prompt (动态加载，支持热更新)
+        context.append({"role": "system", "content": load_system_prompt()})
         
         # 2. Summary (如果存在)
         if summary:

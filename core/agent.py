@@ -134,6 +134,16 @@ class EchoAgent:
                                      # 没标签，或者标签已处理完（不应该，因为 handled in split? no）
                                      # 这里处理：buffer = "Hello world"
                                      cleaned = self._clean_content(buffer)
+                                     # [Fix] 去除开头的空白字符
+                                     if not final_clean_response:
+                                         cleaned = cleaned.lstrip()
+                                         if not cleaned: # 如果全是空白，等待更多内容
+                                             # 注意：这里 buffer 不能清空，因为可能只是半个换行符？不，buffer 肯定是完整的字符
+                                             # 但如果是 \n，lstrip 后为空。我们应该清空 buffer 吗？
+                                             # 是的，因为这个字符被消耗（丢弃）了。
+                                             buffer = ""
+                                             continue
+                                     
                                      yield cleaned
                                      final_clean_response += cleaned
                                      buffer = ""
@@ -210,20 +220,35 @@ class EchoAgent:
                 # 除非模型断在这里了。
                 # 无论如何，全部输出。
                 cleaned = self._clean_content(buffer)
-                yield cleaned
-                final_clean_response += cleaned
+                
+                if not final_clean_response:
+                     cleaned = cleaned.lstrip()
+                
+                if cleaned: # 只有非空才输出
+                    yield cleaned
+                    final_clean_response += cleaned
             elif not has_started_response and buffer:
-                 # 如果全程没标签，且 buffer 还有剩，输出它
-                 # 再次尝试去除 </response> (针对 Fallback 情况)
-                 if "</response>" in buffer:
-                     content, _ = buffer.split("</response>", 1)
-                     cleaned = self._clean_content(content)
-                     yield cleaned
-                     final_clean_response += cleaned
-                 elif "<thought>" not in buffer:
-                     cleaned = self._clean_content(buffer)
-                     yield cleaned
-                     final_clean_response += cleaned
+                  # 如果全程没标签，且 buffer 还有剩，输出它
+                  # 再次尝试去除 </response> (针对 Fallback 情况)
+                  if "</response>" in buffer:
+                      content, _ = buffer.split("</response>", 1)
+                      cleaned = self._clean_content(content)
+                      
+                      if not final_clean_response:
+                           cleaned = cleaned.lstrip()
+                      
+                      if cleaned:
+                          yield cleaned
+                          final_clean_response += cleaned
+                  elif "<thought>" not in buffer:
+                      cleaned = self._clean_content(buffer)
+                      
+                      if not final_clean_response:
+                           cleaned = cleaned.lstrip()
+                      
+                      if cleaned:
+                          yield cleaned
+                          final_clean_response += cleaned
 
         except Exception as e:
             error_msg = f"\n\n(Error: {str(e)})"
@@ -275,9 +300,11 @@ class EchoAgent:
             "1. **一致性检查**：回顾最近 3 轮对话，禁止自我矛盾。\n"
             "2. **拒绝复读**：如果观点已表达过，请深入细节或换个角度，不要重复。\n"
             "3. **收敛话题**：除非用户发起新话题，否则请聚焦当前话题，不要无故发散。\n"
-            "4. **执行 CoT**：必须先输出 <thought>，再输出 <response>。\n"
-            "5. **情感表达**：在 <response> 的**开头**，必须包含一个情感标签，格式为 [emotion:xxx]，其中 xxx 必须是以下之一：happy, sad, angry, surprised, shy, idle。严禁编造其他标签（如 edge, computational 等）。\n"
-            "6. **严禁 Emoji**：回复中绝对禁止包含任何 Emoji 表情符号，有了 Live2D 形象，不需要 Emoji 来表达情绪。"
+            "4. **严禁 AI 梗与 Meta 发言**：\n"
+            "   - 禁止提及 `核心指令`、`代码`、`算法`、`数据库`、`3TB`、`格式化`。\n"
+            "   - 禁止谈论“我不能违规”或“规则限制了我”。\n"
+            "5. **执行 CoT**：必须先输出 <thought>，再输出 <response>。\n"
+            "6. **严禁 Emoji**：回复中绝对禁止包含任何 Emoji 表情符号。"
         )
         reinforcement_prompt = {
             "role": "system",

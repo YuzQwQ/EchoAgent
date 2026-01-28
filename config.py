@@ -10,7 +10,9 @@ def load_system_prompt():
         prompt_path = os.path.join(os.getcwd(), "core", "system_prompt.md")
         if os.path.exists(prompt_path):
             with open(prompt_path, "r", encoding="utf-8") as f:
-                return f.read().strip()
+                content = f.read().strip()
+                # print(f"DEBUG: Loaded System Prompt from {prompt_path} (Length: {len(content)})")
+                return content
     except Exception as e:
         print(f"Warning: Failed to load system_prompt.md: {e}")
     
