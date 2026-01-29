@@ -245,6 +245,10 @@
 
         append(text) {
             for (let char of text) {
+                // [Fix] 如果当前没有文字且队列为空，忽略开头的空白字符
+                if (this.currentText === "" && this.queue.length === 0 && char.trim() === "") {
+                    continue;
+                }
                 this.queue.push(char);
             }
             if (!this.isTyping) {
