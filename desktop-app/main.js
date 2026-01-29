@@ -35,6 +35,21 @@ function createWindow() {
   // 开发模式下打开 DevTools (调试时取消注释)
   mainWindow.webContents.openDevTools({ mode: 'detach' });
 
+  // [新增] 监听渲染进程的截屏请求
+  const { ipcMain, desktopCapturer } = require('electron');
+
+  ipcMain.handle('get-screen-source-id', async () => {
+    try {
+        const sources = await desktopCapturer.getSources({ types: ['screen'] });
+        // 获取主屏幕 (通常是第一个)
+        const source = sources[0];
+        return source.id;
+    } catch (error) {
+        console.error('Failed to get screen sources:', error);
+        return null;
+    }
+  });
+
   mainWindow.on('closed', function () {
     mainWindow = null;
   });

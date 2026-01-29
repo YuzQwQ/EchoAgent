@@ -32,6 +32,35 @@ class EchoAgent:
         self.tools.register(SystemSelfAwarenessTool())
         self.tools.register(ProjectHistoryTool())
 
+    def add_observation_to_context(self, observation: str):
+        """
+        将观察到的事件添加到短期记忆 (Context) 中，但不触发回复。
+        这让 Echo 拥有“上帝视角”，知道用户刚才干了什么。
+        """
+        # 使用 MemoryCapabilityTool 或直接操作 memory
+        # 这里为了简单，直接作为一条 System Message 或 User Info 插入
+        # 但我们不想让它变成 "User said: ...", 而是 "System noticed: ..."
+        
+        # 我们可以把它包装成一条特殊的 System Message，或者 append 到 chat history
+        # 但为了不污染对话历史，最好放在 System Prompt 的 dynamic context 里
+        # 目前最简单的方法是作为一条 "Hidden User Message" 插入，但标记为已处理
+        
+        # 更好的方案：
+        # 在下一次用户说话时，把这个观察结果作为 Context 附带进去。
+        # 这里我们先存到一个临时的 buffer 里
+        
+        # 暂时利用 memory 模块的 add_short_term_memory (如果存在)
+        # 或者直接存入 self.memory
+        
+        # [Hack] 既然我们已经有了 Context Reinforcement 机制，
+        # 我们可以把这个观察结果存入 self.memory 的一个特殊字段
+        # 下次 _build_context 时取出来。
+        
+        # 这里简单打印，实际需要 MemoryManager 支持 short_term_observation
+        # 假设 MemoryManager 有这个接口 (如果没有，我们需要加，或者暂时不存)
+        print(f"🧠 [Memory] Recorded observation: {observation}")
+        # TODO: Implement short_term_observation in MemoryManager
+
     def _clean_content(self, text: str) -> str:
         """
         清洗输出内容：

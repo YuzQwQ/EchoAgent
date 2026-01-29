@@ -26,6 +26,50 @@ app.add_middleware(
 agent = EchoAgent()
 tts_service = TTSService()
 
+class ObserverState:
+    """观察模式全局状态管理"""
+    def __init__(self):
+        self.last_speak_time = 0
+        self.last_soft_speak_time = 0
+        
+        # 冷却时间配置 (秒)
+        self.COOLDOWN_SPEAK = 600      # Level 2: 10分钟
+        self.COOLDOWN_SOFTSPEAK = 180  # Level 1.5: 3分钟
+        
+    def should_speak(self, category: str, current_time: float) -> bool:
+        if category == "SPEAK":
+            # Level 2 检查
+            if current_time - self.last_speak_time < self.COOLDOWN_SPEAK:
+                return False
+            return True
+            
+        elif category == "SOFTSPEAK":
+            # Level 1.5 检查
+            # 注意：如果刚刚触发过 Level 2，也不应该马上触发 Level 1.5，避免太吵
+            # 所以这里也要检查 last_speak_time
+            if current_time - self.last_speak_time < self.COOLDOWN_SOFTSPEAK: 
+                return False
+            if current_time - self.last_soft_speak_time < self.COOLDOWN_SOFTSPEAK:
+                return False
+            return True
+            
+        return False
+
+    def record_speak(self, category: str, current_time: float):
+        if category == "SPEAK":
+            self.last_speak_time = current_time
+        elif category == "SOFTSPEAK":
+            self.last_soft_speak_time = current_time
+
+    def reset_cooldown(self):
+        """用户主动交互时重置冷却，允许 Echo 立即跟进"""
+        # 注意：只重置 speak 冷却，保留 soft 冷却防止立刻碎碎念？
+        # 不，用户主动说话了，说明愿意交流，全部重置
+        self.last_speak_time = 0
+        self.last_soft_speak_time = 0
+
+observer_state = ObserverState()
+
 def sanitize_text_for_tts(text: str) -> str:
     """
     清洗文本，去除不适合 TTS 朗读的符号（如 Emoji、Markdown、动作描写、情感标签）
@@ -54,6 +98,11 @@ def sanitize_text_for_tts(text: str) -> str:
     
     return text
 
+from core.vision_service import VisionService
+import time
+
+vision_service = VisionService()
+
 @app.websocket("/ws/chat")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
@@ -66,8 +115,102 @@ async def websocket_endpoint(websocket: WebSocket):
             message_data = json.loads(data)
             
             user_input = message_data.get("content", "")
-            msg_type = message_data.get("type", "text") # text, image, audio
+            msg_type = message_data.get("type", "text") # text, image, audio, auto_observe
             enable_tts = message_data.get("enable_tts", False) # 接收前端开关状态
+
+            # 用户主动交互，重置冷却时间
+            if msg_type in ["text", "audio", "image"]:
+                observer_state.reset_cooldown()
+
+            # 处理自动观察 (Auto Observe)
+            if msg_type == "auto_observe":
+                try:
+                    image_data_str = message_data.get("content", "")
+                    if "base64," in image_data_str:
+                         _, encoded = image_data_str.split("base64,", 1)
+                         image_bytes = base64.b64decode(encoded)
+                    else:
+                         image_bytes = base64.b64decode(image_data_str)
+                    
+                    # 1. 调用 Vision Service 分析 (Mode=observer)
+                    # 这里的 analyze_image 现在返回 JSON 字符串
+                    analysis_result_json = vision_service.analyze_image(image_bytes, mode="observer")
+                    
+                    try:
+                        # 尝试解析 JSON
+                        # 有时候 LLM 即使被要求返回 JSON，也可能带 Markdown 代码块，需清洗
+                        clean_json = analysis_result_json.replace("```json", "").replace("```", "").strip()
+                        analysis_data = json.loads(clean_json)
+                        
+                        description = analysis_data.get("description", "")
+                        category = analysis_data.get("category", "IGNORE")
+                        
+                        print(f"[Observer] Category: {category}, Desc: {description}")
+                        
+                        # 2. 决策逻辑
+                        current_ts = time.time()
+                        if observer_state.should_speak(category, current_ts):
+                            # 触发主动回复
+                            print(f"[Observer] Triggering Echo response ({category})...")
+                            observer_state.record_speak(category, current_ts)
+                            
+                            # 构造特殊的 Prompt 给 Agent
+                            if category == "SOFTSPEAK":
+                                # Level 1.5: 轻度共鸣
+                                observe_prompt = f"""
+                                【观察模式：轻度共鸣】
+                                你刚看到用户屏幕上发生了这件事：{description}
+                                请对用户进行极简短的互动（1句话），表示“我在陪你”或轻微的吐槽。
+                                
+                                【要求】
+                                1. 语气轻松、自然。
+                                2. 不要大惊小怪，不要长篇大论。
+                                3. 类似：“还在写bug呢？”、“这游戏画面不错。”、“看来今天要加班了。”
+                                """
+                            else:
+                                # Level 2: 强力吐槽 (SPEAK)
+                                observe_prompt = f"""
+                                【观察模式：重点吐槽】
+                                你刚看到用户屏幕上发生了这件事：{description}
+                                请根据这件事对用户进行简短但有力的吐槽或情绪共鸣（1-2句话）。
+                                
+                                【绝对红线】
+                                1. 严禁给建议（别说“休息一下”、“注意身体”）。
+                                2. 严禁说教。
+                                3. 语气要像损友或旁观者，可以带点戏剧性。
+                                """
+                            
+                            # 借用 text 类型的处理流程，但输入是 Prompt
+                            # 为了不让前端显示这个 Prompt，我们需要 hack 一下 Agent 或者前端
+                            # 这里直接复用 Agent.chat，前端会收到 Echo 的回复
+                            
+                            # 注意：这里我们直接把 observe_prompt 当作 user_input 传给 Agent
+                            # 但为了不让 history 乱掉，最好在 Agent 里处理
+                            # 简化起见，直接传，但在前端显示上，这个 msg_type 是 auto_observe，前端不应该把 content 显示为用户气泡
+                            
+                            user_input = observe_prompt
+                            msg_type = "text" # 转入通用回复流程
+                            
+                            # 告诉前端：这是 Echo 主动发起的，前端不需要显示“用户发了这段话”
+                            # 但需要显示 Echo 的回复
+                            # 我们在下面的通用流程里处理
+                            
+                        else:
+                            # 即使不说话，如果不是 IGNORE，也应该把这个信息存入 Agent 的短期记忆（Context）
+                            # 这样用户下次说话时，Echo 知道刚才发生了什么
+                            if category != "IGNORE":
+                                agent.add_observation_to_context(description)
+                                print("[Observer] Silent observation recorded.")
+                            
+                            continue # 不触发回复
+
+                    except json.JSONDecodeError:
+                        print(f"[Observer] JSON Parse Error: {analysis_result_json}")
+                        continue
+
+                except Exception as e:
+                    print(f"[Observer] Error: {str(e)}")
+                    continue
 
             # 处理语音消息 (STT)
             if msg_type == "audio":
