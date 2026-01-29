@@ -8,6 +8,9 @@ class WavRecorder {
         this.audioInput = null;
         this.chunks = [];
         this.recording = false;
+        this.sampleRate = 44100;
+        this.stopping = false;
+        this.stopPromise = null;
     }
 
     async start() {
@@ -21,7 +24,7 @@ class WavRecorder {
             // 缓冲区大小 4096, 1 输入通道, 1 输出通道
             this.processor = this.audioContext.createScriptProcessor(4096, 1, 1);
             
-            let sampleRate = this.audioContext.sampleRate;
+            this.sampleRate = this.audioContext.sampleRate;
             this.chunks = [];
             
             this.processor.onaudioprocess = (e) => {
@@ -43,30 +46,52 @@ class WavRecorder {
     }
 
     async stop() {
-        this.recording = false;
-        
-        if (this.mediaStream) {
-            this.mediaStream.getTracks().forEach(track => track.stop());
+        if (this.stopping && this.stopPromise) {
+            return this.stopPromise;
         }
         
-        if (this.audioInput) this.audioInput.disconnect();
-        if (this.processor) this.processor.disconnect();
-        if (this.audioContext) await this.audioContext.close();
+        this.stopping = true;
+        this.recording = false;
         
-        // 合并所有 buffer
-        let length = 0;
-        this.chunks.forEach(chunk => length += chunk.length);
-        let buffer = new Float32Array(length);
-        let offset = 0;
-        this.chunks.forEach(chunk => {
-            buffer.set(chunk, offset);
-            offset += chunk.length;
-        });
+        this.stopPromise = (async () => {
+            if (this.mediaStream) {
+                this.mediaStream.getTracks().forEach(track => track.stop());
+            }
+            
+            if (this.audioInput) this.audioInput.disconnect();
+            if (this.processor) this.processor.disconnect();
+            
+            const context = this.audioContext;
+            this.audioContext = null;
+            
+            if (context && context.state !== 'closed') {
+                try {
+                    await context.close();
+                } catch (e) {}
+            }
+            
+            this.mediaStream = null;
+            this.audioInput = null;
+            this.processor = null;
+            
+            let length = 0;
+            this.chunks.forEach(chunk => length += chunk.length);
+            let buffer = new Float32Array(length);
+            let offset = 0;
+            this.chunks.forEach(chunk => {
+                buffer.set(chunk, offset);
+                offset += chunk.length;
+            });
+            
+            return this.encodeWAV(buffer, this.sampleRate);
+        })();
         
-        // 降采样到 16000Hz (可选，Google Speech API 偏好 16k 或 44.1k，但减少数据量更好)
-        // 这里为了简单，保持原始采样率 (通常是 44100 或 48000)
-        // 转换为 16-bit PCM WAV
-        return this.encodeWAV(buffer, this.audioContext.sampleRate);
+        try {
+            return await this.stopPromise;
+        } finally {
+            this.stopping = false;
+            this.stopPromise = null;
+        }
     }
 
     encodeWAV(samples, sampleRate) {
