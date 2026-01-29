@@ -38,6 +38,9 @@ function createWindow() {
   // [新增] 监听渲染进程的截屏请求
   const { ipcMain, desktopCapturer } = require('electron');
 
+  // 动作列表窗口引用
+  let motionWindow = null;
+
   ipcMain.handle('get-screen-source-id', async () => {
     try {
         const sources = await desktopCapturer.getSources({ types: ['screen'] });
@@ -50,8 +53,50 @@ function createWindow() {
     }
   });
 
+  // 打开动作列表窗口
+  ipcMain.on('open-motion-window', (event, motions) => {
+    if (motionWindow) {
+        motionWindow.focus();
+        // 如果窗口已存在，更新数据
+        motionWindow.webContents.send('init-motions', motions);
+        return;
+    }
+
+    motionWindow = new BrowserWindow({
+        width: 400,
+        height: 600,
+        title: '动作控制器',
+        autoHideMenuBar: true,
+        webPreferences: {
+            nodeIntegration: true,
+            contextIsolation: false
+        }
+    });
+
+    motionWindow.loadFile('motion.html');
+
+    motionWindow.webContents.on('did-finish-load', () => {
+        motionWindow.webContents.send('init-motions', motions);
+    });
+
+    motionWindow.on('closed', () => {
+        motionWindow = null;
+    });
+  });
+
+  // 转发动作指令: MotionWindow -> MainWindow
+  ipcMain.on('trigger-motion', (event, data) => {
+      if (mainWindow) {
+          mainWindow.webContents.send('play-motion', data);
+      }
+  });
+
   mainWindow.on('closed', function () {
     mainWindow = null;
+    // 主窗口关闭时，也关闭动作窗口
+    if (motionWindow) {
+        motionWindow.close();
+    }
   });
 }
 

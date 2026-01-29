@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Echo 动作列表</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', sans-serif;
+            margin: 0;
+            padding: 0;
+            background: linear-gradient(180deg, #fbfcff 0%, #f1f4fb 100%);
+            user-select: none;
+            overflow-y: auto;
+        }
+
+        .header {
+            position: sticky;
+            top: 0;
+            background: rgba(255,255,255,0.9);
+            padding: 12px 16px;
+            border-bottom: 1px solid rgba(110, 120, 150, 0.12);
+            box-shadow: 0 10px 24px rgba(20, 24, 40, 0.1);
+            z-index: 10;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            backdrop-filter: blur(12px) saturate(140%);
+        }
+
+        .title {
+            font-weight: bold;
+            font-size: 14px;
+            color: #2c2f36;
+            letter-spacing: 0.2px;
+        }
+
+        .container {
+            padding: 16px;
+        }
+
+        .motion-group {
+            margin-bottom: 20px;
+            background: rgba(255,255,255,0.96);
+            border-radius: 12px;
+            padding: 12px;
+            box-shadow: 0 12px 28px rgba(20, 24, 40, 0.08);
+            border: 1px solid rgba(120, 130, 160, 0.12);
+        }
+
+        .motion-group-title {
+            font-size: 12px;
+            color: #5f6878;
+            margin-bottom: 10px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            border-bottom: 1px solid rgba(120, 130, 160, 0.12);
+            padding-bottom: 5px;
+        }
+
+        .motion-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(92px, 1fr));
+            gap: 10px;
+        }
+
+        .motion-item {
+            background: linear-gradient(180deg, #ffffff 0%, #f2f5fb 100%);
+            border: 1px solid rgba(120, 130, 160, 0.14);
+            padding: 8px 6px;
+            border-radius: 10px;
+            font-size: 12px;
+            color: #2a2f3a;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            text-align: center;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .motion-item:hover {
+            background: #ffffff;
+            border-color: rgba(120, 130, 160, 0.22);
+            box-shadow: 0 10px 20px rgba(20, 24, 40, 0.12);
+            transform: translateY(-2px);
+        }
+
+        .motion-item:active {
+            transform: translateY(0);
+            background: #e9edf6;
+        }
+        
+        /* 滚动条样式 */
+        ::-webkit-scrollbar {
+            width: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #c3c8d4;
+            border-radius: 3px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #aaa;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <span class="title">动作控制器</span>
+    </div>
+    <div class="container" id="motion-list">
+        <div style="text-align: center; color: #999; margin-top: 20px;">
+            正在获取动作数据...
+        </div>
+    </div>
+
+    <script>
+        const { ipcRenderer } = require('electron');
+
+        const motionList = document.getElementById('motion-list');
+
+        // 动作描述映射
+        const MOTION_DESCRIPTIONS = {
+            'm01': '点点头',
+            'm02': '好奇',
+            'm03': '左右晃(开心)',
+            'm04': '难过',
+            'm05': '笑',
+            'm06': '举手(开心)',
+            'm07': '惊讶晃动',
+            'm08': '举手(超开心)',
+            'm09': '惊讶不开心',
+            'm10': '很难过'
+        };
+
+        // 接收动作数据
+        ipcRenderer.on('init-motions', (event, motions) => {
+            renderMotions(motions);
+        });
+
+        function renderMotions(motions) {
+            motionList.innerHTML = '';
+            
+            if (!motions || Object.keys(motions).length === 0) {
+                motionList.innerHTML = '<div style="text-align: center; color: #999; margin-top: 20px;">未找到动作定义</div>';
+                return;
+            }
+
+            for (const [group, items] of Object.entries(motions)) {
+                const groupDiv = document.createElement('div');
+                groupDiv.className = 'motion-group';
+                
+                const title = document.createElement('div');
+                title.className = 'motion-group-title';
+                title.textContent = group;
+                groupDiv.appendChild(title);
+                
+                const grid = document.createElement('div');
+                grid.className = 'motion-grid';
+                
+                items.forEach((item, index) => {
+                    const btn = document.createElement('button');
+                    btn.className = 'motion-item';
+                    
+                    // 解析文件名作为显示名称
+                    let displayName = `Motion ${index + 1}`;
+                    let fullFileName = '';
+                    
+                    if (item.File) {
+                        const parts = item.File.split('/');
+                        fullFileName = parts[parts.length - 1];
+                        displayName = fullFileName.replace('.motion3.json', '');
+                        
+                        // 尝试匹配描述
+                        for (const [key, desc] of Object.entries(MOTION_DESCRIPTIONS)) {
+                            if (displayName.includes(key)) {
+                                displayName = `${key} ${desc}`;
+                                break;
+                            }
+                        }
+                    }
+                    
+                    btn.textContent = displayName;
+                    btn.title = fullFileName || '';
+                    
+                    btn.addEventListener('click', () => {
+                        // 发送播放指令
+                        ipcRenderer.send('trigger-motion', { group, index, name: displayName });
+                    });
+                    
+                    grid.appendChild(btn);
+                });
+                
+                groupDiv.appendChild(grid);
+                motionList.appendChild(groupDiv);
+            }
+        }
+    </script>
+</body>
+</html>
