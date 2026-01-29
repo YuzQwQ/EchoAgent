@@ -150,7 +150,7 @@
             animation: breathe 2s infinite;
             color: #ff4444;
         }
-
+        
         /* 输入框浮层 */
         #input-overlay {
             position: absolute;
@@ -224,138 +224,19 @@
     </div>
 
 <script>
-    const { ipcRenderer } = require('electron');
-
     // 映射新 UI 元素
     const bubble = document.getElementById('bubble');
     const inputOverlay = document.getElementById('input-overlay');
     const toggleInputBtn = document.getElementById('toggle-input-btn');
+    const observerBtn = document.getElementById('observer-btn');
     const miniInput = document.getElementById('mini-input');
     const miniSendBtn = document.getElementById('mini-send-btn');
-    
-    // 观察模式按钮
-    const observerBtn = document.getElementById('observer-btn');
-    let observerInterval = null;
-    let isObserverActive = false;
     
     // 原始变量重新映射 (为了兼容下面的旧代码)
     const chatContainer = document.getElementById('chat-container'); // 依然保留，防止报错，但不可见
     // const messageInput = document.getElementById('message-input'); // 下面会重新获取
     // const sendBtn = document.getElementById('send-btn'); // 下面会重新获取
     
-    // ------------------------------------------------------------
-    // [Observer Mode Logic]
-    // ------------------------------------------------------------
-    observerBtn.addEventListener('click', () => {
-        isObserverActive = !isObserverActive;
-        if (isObserverActive) {
-            observerBtn.classList.add('active');
-            startObserverLoop();
-            
-            // 显示短暂提示
-            subtitleBar.innerText = "Echo 正在暗中观察...";
-            subtitleBar.classList.remove('hide');
-            subtitleBar.classList.add('show');
-            setTimeout(() => {
-                 if (!typewriter.isTyping) {
-                     subtitleBar.classList.add('hide');
-                     subtitleBar.classList.remove('show');
-                 }
-            }, 3000);
-            
-        } else {
-            observerBtn.classList.remove('active');
-            stopObserverLoop();
-            
-            subtitleBar.innerText = "观察模式已关闭";
-            subtitleBar.classList.remove('hide');
-            subtitleBar.classList.add('show');
-            setTimeout(() => {
-                 if (!typewriter.isTyping) {
-                     subtitleBar.classList.add('hide');
-                     subtitleBar.classList.remove('show');
-                 }
-            }, 3000);
-        }
-    });
-
-    function startObserverLoop() {
-        if (observerInterval) clearInterval(observerInterval);
-        
-        // 立即执行一次
-        captureAndSendScreen();
-        
-        // 每 30 秒执行一次
-        observerInterval = setInterval(captureAndSendScreen, 30000);
-    }
-
-    function stopObserverLoop() {
-        if (observerInterval) {
-            clearInterval(observerInterval);
-            observerInterval = null;
-        }
-    }
-
-    async function captureAndSendScreen() {
-        if (!ws || ws.readyState !== WebSocket.OPEN) return;
-        
-        try {
-            // 1. 获取屏幕流 ID
-            const sourceId = await ipcRenderer.invoke('get-screen-source-id');
-            if (!sourceId) return;
-            
-            // 2. 获取视频流
-            const stream = await navigator.mediaDevices.getUserMedia({
-                audio: false,
-                video: {
-                    mandatory: {
-                        chromeMediaSource: 'desktop',
-                        chromeMediaSourceId: sourceId,
-                        maxWidth: 1280, // 限制分辨率，节省流量和计算
-                        maxHeight: 720
-                    }
-                }
-            });
-            
-            // 3. 截取第一帧
-            const video = document.createElement('video');
-            video.srcObject = stream;
-            video.onloadedmetadata = async () => {
-                video.play();
-                
-                // 等待一小会儿确保画面渲染
-                await new Promise(r => setTimeout(r, 500));
-                
-                const canvas = document.createElement('canvas');
-                canvas.width = video.videoWidth;
-                canvas.height = video.videoHeight;
-                const ctx = canvas.getContext('2d');
-                ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-                
-                // 4. 转 Base64 (JPEG 质量 0.6)
-                const base64Data = canvas.toDataURL('image/jpeg', 0.6);
-                
-                // 5. 发送给后端
-                // 注意：这里用特殊的 type "auto_observe"
-                ws.send(JSON.stringify({
-                    type: "auto_observe",
-                    content: base64Data,
-                    enable_tts: isTTSEnabled // 沿用当前的 TTS 开关设置
-                }));
-                
-                // 6. 清理
-                stream.getTracks().forEach(track => track.stop());
-                video.remove();
-                canvas.remove();
-                
-                console.log("Observer: Screen captured and sent.");
-            };
-            
-        } catch (e) {
-            console.error("Observer Error:", e);
-        }
-    }
-
     // UI 交互逻辑
     toggleInputBtn.addEventListener('click', () => {
         if (inputOverlay.style.display === 'flex') {
@@ -367,6 +248,92 @@
             miniInput.focus();
         }
     });
+
+    // 观察模式逻辑
+    const { ipcRenderer } = require('electron');
+    let isObserverActive = false;
+    let observerInterval = null;
+    const OBSERVER_INTERVAL_MS = 10000; // 每10秒观察一次
+
+    observerBtn.addEventListener('click', () => {
+        isObserverActive = !isObserverActive;
+        if (isObserverActive) {
+            observerBtn.classList.add('active');
+            startObserverLoop();
+            showSubtitle('Echo 正在观察你的屏幕...', 3000);
+        } else {
+            observerBtn.classList.remove('active');
+            stopObserverLoop();
+            showSubtitle('观察模式已关闭', 3000);
+        }
+    });
+
+    function startObserverLoop() {
+        // 立即执行一次
+        captureAndSendScreen();
+        // 启动定时器
+        observerInterval = setInterval(captureAndSendScreen, OBSERVER_INTERVAL_MS);
+    }
+
+    function stopObserverLoop() {
+        if (observerInterval) {
+            clearInterval(observerInterval);
+            observerInterval = null;
+        }
+    }
+
+    async function captureAndSendScreen() {
+        if (!isConnected) return;
+        
+        try {
+            const sourceId = await ipcRenderer.invoke('get-screen-source-id');
+            if (!sourceId) throw new Error("No screen source found");
+
+            const stream = await navigator.mediaDevices.getUserMedia({
+                audio: false,
+                video: {
+                    mandatory: {
+                        chromeMediaSource: 'desktop',
+                        chromeMediaSourceId: sourceId,
+                        maxWidth: 1920,
+                        maxHeight: 1080
+                    }
+                }
+            });
+            
+            const video = document.createElement('video');
+            video.srcObject = stream;
+            video.onloadedmetadata = () => {
+                video.play();
+                const canvas = document.createElement('canvas');
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+                const ctx = canvas.getContext('2d');
+                ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                
+                const base64Data = canvas.toDataURL('image/jpeg', 0.8);
+                
+                // 发送
+                ws.send(JSON.stringify({
+                    type: 'image',
+                    content: base64Data,
+                    mode: 'observer' // 标记为观察模式
+                }));
+                
+                // 清理
+                stream.getTracks().forEach(track => track.stop());
+                video.remove();
+                canvas.remove();
+            };
+            
+        } catch (e) {
+            console.error("Screen capture failed:", e);
+            showSubtitle('截图失败: ' + e.message, 3000);
+            isObserverActive = false;
+            observerBtn.classList.remove('active');
+            stopObserverLoop();
+        }
+    }
 
     // 4. 字幕/打字机效果相关
     const subtitleBar = document.getElementById('subtitle-bar');
