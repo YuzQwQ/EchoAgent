@@ -48,6 +48,7 @@ function createWindow() {
     frame: false,       // 无边框
     transparent: true,  // 透明背景
     alwaysOnTop: true,  // 置顶
+    type: 'toolbar',    // [Fix] 尝试提高窗口层级
     hasShadow: false,   // 去掉系统阴影
     resizable: true,    // 允许调整大小
     skipTaskbar: false, // 任务栏可见（方便找回，也可以设为true隐藏）
@@ -60,6 +61,9 @@ function createWindow() {
       backgroundThrottling: false // [Critical] 防止窗口失去焦点/鼠标移出时页面被冻结
     }
   });
+
+  // [Fix] 强制设置置顶级别为 'screen-saver' (Windows上最高层级，可覆盖全屏任务栏)
+  mainWindow.setAlwaysOnTop(true, 'screen-saver');
 
   // 移除默认菜单 (也会禁用 F11 等快捷键)
   mainWindow.setMenu(null);

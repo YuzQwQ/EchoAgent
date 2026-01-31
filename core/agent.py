@@ -306,7 +306,7 @@ class EchoAgent:
                      thought_content = pre_thought.replace('<thought>', '').strip()
                      print(f"\n🧠 [Echo Thought]: {thought_content}\n")
                      # [Modified] 将思考过程也发送给前端
-                     yield f"> *{thought_content}*\n\n"
+                     # yield f"> *{thought_content}*\n\n" # [Fix] Hide thought chain from user
                      
                      is_in_thought = False
                      # has_started_response 保持 False，等待真正的 <response> 或 Fallback

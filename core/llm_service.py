@@ -19,6 +19,31 @@ class LLMService:
         retry=retry_if_exception_type((APIError, ConnectionError)),
         reraise=True
     )
+    def chat_completion(self, messages: List[Dict[str, str]]) -> str:
+        """
+        非流式调用 LLM 生成回复
+        """
+        if not config.LLM_API_KEY:
+             return "⚠️ 请在 .env 文件中配置 LLM_API_KEY"
+
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                stream=False
+            )
+            return response.choices[0].message.content or ""
+
+        except Exception as e:
+            # print(f"LLM API Error: {e}")
+            raise e
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=4, max=10),
+        retry=retry_if_exception_type((APIError, ConnectionError)),
+        reraise=True
+    )
     def chat_stream(self, messages: List[Dict[str, str]]) -> Generator[str, None, None]:
         """
         流式调用 LLM 生成回复

@@ -59,9 +59,9 @@ class ObserverState:
         self.last_speak_time = 0
         self.last_soft_speak_time = 0
         
-        # 冷却时间配置 (秒)
-        self.COOLDOWN_SPEAK = 600      # Level 2: 10分钟
-        self.COOLDOWN_SOFTSPEAK = 180  # Level 1.5: 3分钟
+        # 冷却时间配置 (秒) - 适当回调阈值，防止刷屏
+        self.COOLDOWN_SPEAK = 300      # Level 2: 5分钟
+        self.COOLDOWN_SOFTSPEAK = 60   # Level 1.5: 1分钟
         
     def should_speak(self, category: str, current_time: float) -> bool:
         if category == "SPEAK":
@@ -183,44 +183,28 @@ async def websocket_endpoint(websocket: WebSocket):
                             print(f"[Observer] Triggering Echo response ({category})...")
                             observer_state.record_speak(category, current_ts)
                             
-                            # 构造特殊的 Prompt 给 Agent
+                            # 构造观察模式的输入，不再使用覆盖性 Prompt，而是作为系统观察事件传入
+                            # 这样可以复用 Agent 的核心人设和记忆逻辑，保持性格一致性
+                            
+                            interaction_hint = ""
                             if category == "SOFTSPEAK":
-                                # Level 1.5: 轻度共鸣
-                                observe_prompt = f"""
-                                【观察模式：轻度共鸣】
-                                你刚看到用户屏幕上发生了这件事：{description}
-                                请对用户进行极简短的互动（1句话），表示“我在陪你”或轻微的吐槽。
-                                
-                                【要求】
-                                1. 语气轻松、自然。
-                                2. 不要大惊小怪，不要长篇大论。
-                                3. 类似：“还在写bug呢？”、“这游戏画面不错。”、“看来今天要加班了。”
-                                """
+                                # Level 1.5: 轻度共鸣 (提示 Agent 简短一点)
+                                interaction_hint = "（请进行极简短的互动，表示你在陪着我，不要长篇大论）"
                             else:
-                                # Level 2: 强力吐槽 (SPEAK)
-                                observe_prompt = f"""
-                                【观察模式：重点吐槽】
-                                你刚看到用户屏幕上发生了这件事：{description}
-                                请根据这件事对用户进行简短但有力的吐槽或情绪共鸣（1-2句话）。
-                                
-                                【绝对红线】
-                                1. 严禁给建议（别说“休息一下”、“注意身体”）。
-                                2. 严禁说教。
-                                3. 语气要像损友或旁观者，可以带点戏剧性。
-                                """
+                                # Level 2: 重点吐槽 (SPEAK)
+                                interaction_hint = "（请根据画面内容进行吐槽或情绪共鸣，语气自然一点）"
                             
-                            # 借用 text 类型的处理流程，但输入是 Prompt
-                            # 为了不让前端显示这个 Prompt，我们需要 hack 一下 Agent 或者前端
-                            # 这里直接复用 Agent.chat，前端会收到 Echo 的回复
+                            # 将观察结果封装为特殊的文本输入
+                            observe_input = f"【系统视觉观察】用户屏幕当前显示：{description}。{interaction_hint}"
                             
-                            # 注意：这里我们直接把 observe_prompt 当作 user_input 传给 Agent
-                            # 但为了不让 history 乱掉，最好在 Agent 里处理
-                            # 简化起见，直接传，但在前端显示上，这个 msg_type 是 auto_observe，前端不应该把 content 显示为用户气泡
-                            
-                            user_input = observe_prompt
+                            # 借用 text 类型的处理流程
+                            user_input = observe_input
                             msg_type = "text" # 转入通用回复流程
-                            allow_behavior_memory = category == "SPEAK"
-                            allow_l0 = category == "SPEAK"
+                            
+                            # 开启记忆关联，确保“逻辑”一致性
+                            # 无论是 SOFTSPEAK 还是 SPEAK，都应该允许访问记忆，这样 Echo 才知道用户在做什么项目
+                            allow_behavior_memory = True 
+                            allow_l0 = True # 允许访问短期观察记录
                             
                             # 告诉前端：这是 Echo 主动发起的，前端不需要显示“用户发了这段话”
                             # 但需要显示 Echo 的回复
@@ -329,6 +313,7 @@ async def websocket_endpoint(websocket: WebSocket):
                             
                         # 2. 调用 Agent 进行静默分析
                         # 我们把 game_context 传给 process_observer_image
+                        full_response = "" # [Fix] 初始化 full_response 变量
                         for chunk in agent.process_observer_image(image_bytes, mime_type, observer_state, current_time, game_context):
                             full_response += chunk
                             await websocket.send_json({
