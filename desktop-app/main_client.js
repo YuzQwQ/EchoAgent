@@ -80,7 +80,7 @@ function createWindow() {
   });
   
   // 开发模式下打开 DevTools
-  // mainWindow.webContents.openDevTools({ mode: 'detach' });
+  mainWindow.webContents.openDevTools({ mode: 'detach' });
   
   // 启动鼠标轮询
   startGlobalMousePolling();
