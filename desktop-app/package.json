@@ -3,13 +3,26 @@
   "version": "1.0.0",
   "main": "main.js",
   "scripts": {
-    "start": "electron ."
+    "start": "electron .",
+    "dist": "electron-builder"
+  },
+  "build": {
+    "appId": "com.echo.desktop",
+    "productName": "Echo Desktop",
+    "win": {
+      "target": "nsis",
+      "verifyUpdateCodeSignature": false
+    },
+    "directories": {
+      "output": "dist"
+    }
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "description": "Echo AI Desktop Client",
   "devDependencies": {
-    "electron": "^39.2.7"
+    "electron": "^39.2.7",
+    "electron-builder": "^26.4.0"
   }
 }

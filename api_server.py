@@ -1,4 +1,5 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from core.agent import EchoAgent
 from core.tts_service import TTSService
@@ -21,6 +22,32 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# 挂载前端静态文件 (实现 HTTP 托管)
+# 注意：必须先定义具体的 API 路由，最后再挂载 "/"，否则静态文件路由会拦截所有请求
+# 为了避免 WebSocket 被拦截，我们把静态文件挂载到 "/ui" 或者确保它不覆盖 WebSocket 路由
+# FastAPI 的 mount 顺序很重要。
+
+# 方案：将静态文件挂载调整到文件末尾，或者使用具体路径
+# 由于我们需要访问根路径 "/"，所以必须小心。
+# WebSocket 路由 "/ws/chat" 应该在 mount "/" 之前定义吗？
+# 不，FastAPI 的路由匹配是按顺序的，但 mount "/" 作为一个 catch-all 可能会有问题。
+
+# 修正：将 mount 移动到文件最底部，或者确保 WebSocket 路由先被注册。
+# 但在这里，WebSocket 路由是在 @app.websocket 装饰器中定义的，通常会在启动时注册。
+# 关键问题是：StaticFiles 中间件可能会拦截 WebSocket 握手请求 (因为它只处理 http scope)。
+
+# 解决方法：不要挂载到根路径 "/"，或者自定义 StaticFiles 来忽略 WebSocket。
+# 或者，最简单的：把 WebSocket 路由定义移到 mount 之前？(Python 代码执行顺序)
+# 实际上 @app.websocket 只是注册路由，真正的请求处理顺序取决于 Starlette 的路由表顺序。
+# 显式挂载 "/" 会匹配所有路径。
+
+# 最佳实践：
+# 1. 先定义 API 和 WebSocket 路由。
+# 2. 最后挂载静态文件到 "/"。
+
+# 我们先把这里的 mount 代码删掉，移动到文件末尾。
+pass
 
 # 初始化 Agent 和 TTS
 agent = EchoAgent()
@@ -274,6 +301,7 @@ async def websocket_endpoint(websocket: WebSocket):
             if msg_type == "image":
                 try:
                     image_data_str = message_data.get("content", "")
+                    mode = message_data.get("mode", "manual") # 'observer' or 'manual'
                     mime_type = "image/jpeg"
                     
                     if "base64," in image_data_str:
@@ -284,15 +312,43 @@ async def websocket_endpoint(websocket: WebSocket):
                     else:
                         image_bytes = base64.b64decode(image_data_str)
                     
-                    full_response = ""
-                    for chunk in agent.process_image(image_bytes, mime_type, allow_behavior_memory=allow_behavior_memory, allow_l0=allow_l0):
-                        full_response += chunk
-                        await websocket.send_json({
-                            "type": "chunk",
-                            "content": chunk,
-                            "is_final": False
-                        })
-                        await asyncio.sleep(0.01)
+                    # [Observer Mode Logic]
+                    if mode == "observer":
+                        # 观察模式：静默分析，决定是否说话
+                        current_time = asyncio.get_running_loop().time()
+                        
+                        # 获取游戏上下文 (Game Context)
+                        # 前端如果选择了泰拉瑞亚模式，会传 {"name": "Terraria"}
+                        # 如果没有传，默认是 General
+                        game_context = message_data.get("game_context", {"name": "General"})
+                        
+                        # 1. 检查冷却 (快速失败)
+                        if not observer_state.should_speak("SOFTSPEAK", current_time):
+                            print("Observer: Cooldown active, ignoring image.")
+                            continue # 直接跳过，不发给 LLM
+                            
+                        # 2. 调用 Agent 进行静默分析
+                        # 我们把 game_context 传给 process_observer_image
+                        for chunk in agent.process_observer_image(image_bytes, mime_type, observer_state, current_time, game_context):
+                            full_response += chunk
+                            await websocket.send_json({
+                                "type": "chunk",
+                                "content": chunk,
+                                "is_final": False
+                            })
+                            await asyncio.sleep(0.01)
+                            
+                    else:
+                        # 手动模式：总是回复
+                        full_response = ""
+                        for chunk in agent.process_image(image_bytes, mime_type, allow_behavior_memory=allow_behavior_memory, allow_l0=allow_l0):
+                            full_response += chunk
+                            await websocket.send_json({
+                                "type": "chunk",
+                                "content": chunk,
+                                "is_final": False
+                            })
+                            await asyncio.sleep(0.01)
                         
                     await websocket.send_json({
                         "type": "done",
@@ -444,6 +500,13 @@ async def tts_worker(websocket: WebSocket, queue: asyncio.Queue, service: TTSSer
 def health_check():
     return {"status": "ok", "model": config.PRIMARY_MODEL_NAME}
 
+# [关键修正] 必须在所有 API 路由定义完成后，最后挂载静态文件到根路径
+# 否则静态文件中间件会拦截掉 WebSocket 握手请求，导致 500 错误
+try:
+    app.mount("/", StaticFiles(directory="desktop-app", html=True), name="static")
+except Exception as e:
+    print(f"Warning: Failed to mount frontend static files: {e}")
+
 if __name__ == "__main__":
     # 开发模式下运行
-    uvicorn.run("api_server:app", host="127.0.0.1", port=8000, reload=True)
+    uvicorn.run("api_server:app", host="0.0.0.0", port=8000, reload=True)

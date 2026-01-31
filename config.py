@@ -36,6 +36,11 @@ class Config:
     VISION_MODEL_BASE_URL = os.getenv("VISION_MODEL_BASE_URL", "https://api.siliconflow.cn/v1")
     VISION_MODEL = os.getenv("VISION_MODEL", "qwen-vl-max")
 
+    # Embedding Model Config
+    EMBEDDING_API_KEY = os.getenv("EMBEDDING_API_KEY") or PRIMARY_API_KEY
+    EMBEDDING_BASE_URL = os.getenv("EMBEDDING_BASE_URL") or PRIMARY_BASE_URL
+    EMBEDDING_MODEL_ID = os.getenv("EMBEDDING_MODEL_ID", "text-embedding-3-small")
+
     # TTS Config
     TTS_PROVIDER = os.getenv("TTS_PROVIDER", "edge") # edge, gpt-sovits
     

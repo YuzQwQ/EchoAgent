@@ -1,16 +1,17 @@
 const { app, BrowserWindow, screen } = require('electron');
 const path = require('path');
-const { spawn } = require('child_process');
+// const { spawn } = require('child_process'); // Client 端不需要启动 Python 后端
 
 // 屏蔽 Electron 安全警告（仅用于开发环境）
 process.env['ELECTRON_DISABLE_SECURITY_WARNINGS'] = 'true';
 
 // [Critical] 允许 HTTP 非安全源使用 getUserMedia (摄像头/麦克风/屏幕共享)
 // 必须在 app 'ready' 事件之前调用
-app.commandLine.appendSwitch('unsafely-treat-insecure-origin-as-secure', 'http://192.168.0.19:8000');
+// 请确保 IP 地址与您的 Server 地址一致
+const SERVER_URL = 'http://192.168.0.19:8000';
+app.commandLine.appendSwitch('unsafely-treat-insecure-origin-as-secure', SERVER_URL);
 
 let mainWindow;
-let apiProcess;
 let mousePollInterval;
 
 function startGlobalMousePolling() {
@@ -28,7 +29,7 @@ function startGlobalMousePolling() {
             const relativeX = point.x - bounds.x;
             const relativeY = point.y - bounds.y;
             
-            // 发送给渲染进程 (同时发送全局坐标，用于全屏追踪)
+            // [Updated] 发送给渲染进程 (同时发送全局坐标，用于全屏追踪)
             mainWindow.webContents.send('global-mouse-move', { 
                 x: relativeX, 
                 y: relativeY,
@@ -50,8 +51,8 @@ function createWindow() {
     alwaysOnTop: true,  // 置顶
     hasShadow: false,   // 去掉系统阴影
     resizable: true,    // 允许调整大小
-    skipTaskbar: false, // 任务栏可见（方便找回，也可以设为true隐藏）
-    fullscreenable: false, // 禁止全屏 (防止 F11 误触导致无法操作)
+    skipTaskbar: false, // 任务栏可见
+    fullscreenable: false, // 禁止全屏
     maximizable: false,    // 禁止最大化
     webPreferences: {
       nodeIntegration: true,
@@ -61,13 +62,21 @@ function createWindow() {
     }
   });
 
-  // 移除默认菜单 (也会禁用 F11 等快捷键)
+  // 移除默认菜单
   mainWindow.setMenu(null);
 
-  mainWindow.loadFile('index.html');
+  // [修改重点] 加载远程 Server 页面
+  console.log(`Loading remote URL: ${SERVER_URL}/index.html`);
+  mainWindow.loadURL(`${SERVER_URL}/index.html`);
   
-  // 开发模式下打开 DevTools (调试时取消注释)
-  mainWindow.webContents.openDevTools({ mode: 'detach' });
+  // 如果加载失败，尝试加载本地作为 fallback (可选)
+  mainWindow.webContents.on('did-fail-load', () => {
+      console.log('Failed to load remote URL, falling back to local file...');
+      // mainWindow.loadFile('index.html'); 
+  });
+  
+  // 开发模式下打开 DevTools
+  // mainWindow.webContents.openDevTools({ mode: 'detach' });
   
   // 启动鼠标轮询
   startGlobalMousePolling();
@@ -94,7 +103,6 @@ function createWindow() {
   ipcMain.on('open-motion-window', (event, motions) => {
     if (motionWindow) {
         motionWindow.focus();
-        // 如果窗口已存在，更新数据
         motionWindow.webContents.send('init-motions', motions);
         return;
     }
@@ -110,7 +118,9 @@ function createWindow() {
         }
     });
 
-    motionWindow.loadFile('motion.html');
+    // 动作窗口也加载远程的，或者本地的 motion.html 均可
+    // 如果 motion.html 也在服务器上，建议加载远程
+    motionWindow.loadURL(`${SERVER_URL}/motion.html`);
 
     motionWindow.webContents.on('did-finish-load', () => {
         motionWindow.webContents.send('init-motions', motions);
@@ -130,43 +140,14 @@ function createWindow() {
 
   mainWindow.on('closed', function () {
     mainWindow = null;
-    if (mousePollInterval) clearInterval(mousePollInterval); // 停止轮询
-    // 主窗口关闭时，也关闭动作窗口
+    if (mousePollInterval) clearInterval(mousePollInterval);
     if (motionWindow) {
         motionWindow.close();
     }
   });
 }
 
-function startApiServer() {
-  // 启动 Python FastAPI 服务
-  // 假设在开发环境，直接调用 python api_server.py
-  // 生产环境需要调用打包好的 exe
-  const pythonCmd = process.platform === 'win32' ? 'python' : 'python3';
-  const apiPath = path.join(__dirname, '../api_server.py');
-  
-  console.log(`Starting API Server: ${pythonCmd} ${apiPath}`);
-  
-  apiProcess = spawn(pythonCmd, [apiPath], {
-    cwd: path.join(__dirname, '..'), // 设置工作目录为项目根目录，以便读取 .env
-    shell: true
-  });
-
-  apiProcess.stdout.on('data', (data) => {
-    console.log(`API stdout: ${data}`);
-  });
-
-  apiProcess.stderr.on('data', (data) => {
-    console.error(`API stderr: ${data}`);
-  });
-  
-  apiProcess.on('close', (code) => {
-    console.log(`API process exited with code ${code}`);
-  });
-}
-
 app.whenReady().then(() => {
-  // startApiServer(); // 暂时手动启动 API 服务以便调试，稳定后再自动启动
   createWindow();
 
   app.on('activate', function () {
@@ -175,16 +156,5 @@ app.whenReady().then(() => {
 });
 
 app.on('window-all-closed', function () {
-  // 杀死 Python 进程
-  if (apiProcess) {
-    apiProcess.kill();
-  }
-  
   if (process.platform !== 'darwin') app.quit();
-});
-
-app.on('will-quit', () => {
-    if (apiProcess) {
-        apiProcess.kill();
-    }
 });

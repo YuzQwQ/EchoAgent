@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <!-- 放宽 CSP 限制：允许 WebSocket, CDN 脚本, 以及 Live2D 需要的 unsafe-eval -->
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline' 'unsafe-eval' https://cubism.live2d.com https://cdn.jsdelivr.net https://cdnjs.cloudflare.com ws://127.0.0.1:8000 data: blob: filesystem:;">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline' 'unsafe-eval' https://cubism.live2d.com https://cdn.jsdelivr.net https://cdnjs.cloudflare.com ws: data: blob: filesystem:;">
     <title>Echo Desktop</title>
     <!-- 引入 PixiJS 和 Live2D 插件 (本地化) -->
     <script src="assets/libs/pixi.min.js"></script>
@@ -12,6 +12,9 @@
     <script src="assets/libs/live2d.min.js"></script>
     <script src="assets/libs/pixi-live2d-display.min.js"></script>
     <script src="assets/libs/wav-recorder.js"></script>
+    
+    <!-- 调试标记：远程加载确认 -->
+    
     <style>
         body {
             margin: 0;
@@ -207,6 +210,9 @@
     <!-- 拖拽层 (用于拖动窗口) -->
     <div id="drag-overlay"></div>
 
+    <!-- 调试光标 (默认隐藏，JS中控制) -->
+    <div id="debug-cursor" style="position: absolute; width: 10px; height: 10px; background: red; border-radius: 50%; pointer-events: none; z-index: 9999; display: none; transform: translate(-50%, -50%);"></div>
+
     <!-- Live2D 层 -->
     <div id="live2d-container">
         <canvas id="live2d-canvas"></canvas>
@@ -224,6 +230,7 @@
         <button class="icon-btn" id="observer-btn" title="观察模式 (Observer Mode)">👁️</button>
         <button class="icon-btn" id="motion-btn" title="动作演示">🎬</button>
         <button class="icon-btn" id="tts-btn" title="开启/关闭语音">🔇</button>
+        <button class="icon-btn" id="settings-btn" title="设置">⚙️</button>
         <button class="icon-btn" id="close-btn" title="退出" style="color: #ff4444;">✕</button>
         <!-- 隐藏图片按钮，保持简洁 -->
         <input type="file" id="image-upload" accept="image/*" style="display: none;">
@@ -234,6 +241,26 @@
     <div id="input-overlay">
         <input type="text" id="mini-input" placeholder="和 Echo 聊聊...">
         <button class="icon-btn" id="mini-send-btn">➤</button>
+    </div>
+
+    <!-- 设置弹窗 -->
+    <div id="settings-modal" style="display: none; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: rgba(255,255,255,0.95); padding: 20px; border-radius: 12px; box-shadow: 0 10px 30px rgba(0,0,0,0.2); z-index: 100; -webkit-app-region: no-drag; min-width: 250px;">
+        <h3 style="margin-top: 0; color: #333;">设置</h3>
+        <div style="margin-bottom: 15px;">
+            <label style="display: block; margin-bottom: 5px; color: #555;">后端地址 (Server IP):</label>
+            <input type="text" id="server-ip-input" placeholder="127.0.0.1" style="width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 6px;">
+        </div>
+        <div style="margin-bottom: 15px;">
+            <label style="display: block; margin-bottom: 5px; color: #555;">观察模式 (Observer Mode):</label>
+            <select id="observer-mode-select" style="width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 6px;">
+                <option value="general">通用模式 (General)</option>
+                <option value="terraria">泰拉瑞亚 (Terraria)</option>
+            </select>
+        </div>
+        <div style="display: flex; justify-content: flex-end; gap: 10px;">
+            <button id="cancel-settings-btn" style="padding: 6px 12px; border: none; background: #eee; border-radius: 6px; cursor: pointer;">取消</button>
+            <button id="save-settings-btn" style="padding: 6px 12px; border: none; background: #007bff; color: white; border-radius: 6px; cursor: pointer;">保存并重启</button>
+        </div>
     </div>
 
     <!-- 动作演示面板 -->
@@ -254,9 +281,55 @@
     const inputOverlay = document.getElementById('input-overlay');
     const toggleInputBtn = document.getElementById('toggle-input-btn');
     const observerBtn = document.getElementById('observer-btn');
+    const settingsBtn = document.getElementById('settings-btn');
+    const settingsModal = document.getElementById('settings-modal');
+    const serverIpInput = document.getElementById('server-ip-input');
+    const observerModeSelect = document.getElementById('observer-mode-select');
+    const saveSettingsBtn = document.getElementById('save-settings-btn');
+    const cancelSettingsBtn = document.getElementById('cancel-settings-btn');
     const miniInput = document.getElementById('mini-input');
     const miniSendBtn = document.getElementById('mini-send-btn');
     
+    // 配置加载
+    // 如果是通过 HTTP 加载的，优先使用当前 URL 的 Host 作为 Server IP
+    // 这样就不用手动改 localStorage 了
+    let defaultIp = '127.0.0.1';
+    if (location.protocol.startsWith('http')) {
+        defaultIp = location.hostname;
+    }
+    let serverIp = localStorage.getItem('server_ip') || defaultIp;
+    let observerMode = localStorage.getItem('observer_mode') || 'general';
+    
+    // 设置按钮逻辑
+    settingsBtn.addEventListener('click', () => {
+        serverIpInput.value = serverIp;
+        if (observerModeSelect) observerModeSelect.value = observerMode;
+        settingsModal.style.display = 'block';
+    });
+    
+    cancelSettingsBtn.addEventListener('click', () => {
+        settingsModal.style.display = 'none';
+    });
+    
+    saveSettingsBtn.addEventListener('click', () => {
+        const newIp = serverIpInput.value.trim();
+        const newMode = observerModeSelect ? observerModeSelect.value : 'general';
+        
+        if (newIp) {
+            localStorage.setItem('server_ip', newIp);
+            localStorage.setItem('observer_mode', newMode);
+            observerMode = newMode;
+            
+            alert('设置已保存。');
+            settingsModal.style.display = 'none';
+            
+            // 如果 IP 变了才刷新，否则只是保存配置
+            if (newIp !== serverIp) {
+                 location.reload();
+            }
+        }
+    });
+
     // 原始变量重新映射 (为了兼容下面的旧代码)
     const chatContainer = document.getElementById('chat-container'); // 依然保留，防止报错，但不可见
     // const messageInput = document.getElementById('message-input'); // 下面会重新获取
@@ -342,7 +415,10 @@
                 ws.send(JSON.stringify({
                     type: 'image',
                     content: base64Data,
-                    mode: 'observer' // 标记为观察模式
+                    mode: 'observer', // 标记为观察模式
+                    game_context: {
+                        name: observerMode === 'terraria' ? 'Terraria' : 'General'
+                    }
                 }));
                 
                 // 清理
@@ -396,6 +472,51 @@
         
         // 强制播放动作 (Priority 3 = FORCE)
         live2dModel.internalModel.motionManager.startMotion(group, index, 3);
+    });
+
+    // [新增] 监听全局鼠标移动，实现全屏视线追踪
+    // const debugCursor = document.getElementById('debug-cursor'); 
+    
+    ipcRenderer.on('global-mouse-move', (event, { x, y, globalX, globalY }) => {
+        // [Debug] 检查数据完整性
+        if (globalX === undefined || globalY === undefined) {
+             // console.warn("Received mouse event but missing global coordinates...");
+             // 降级处理...
+        }
+
+        // 更新调试红点位置 (已移除)
+        // if (debugCursor) { ... }
+
+        if (live2dModel && live2dModel.internalModel) {
+            // 确保关闭内置交互，完全由 IPC 驱动
+            if (live2dModel.autoInteract) live2dModel.autoInteract = false;
+            
+            // 全屏追踪逻辑 (Full Screen Tracking)
+            try {
+                // 如果没有全局坐标（旧版 Client），则回退到相对坐标逻辑（虽然只能在窗口内追踪）
+                if (globalX === undefined || globalY === undefined) {
+                     if (typeof live2dModel.focus === 'function') {
+                        live2dModel.focus(x, y);
+                    }
+                    return;
+                }
+
+                const screenW = window.screen.width;
+                const screenH = window.screen.height;
+                
+                // 映射 X: 0 -> -1 (Left), ScreenW -> 1 (Right)
+                let viewX = (globalX / screenW) * 2.0 - 1.0;
+                
+                // 映射 Y: 0 -> 1 (Top), ScreenH -> -1 (Bottom)
+                let viewY = -((globalY / screenH) * 2.0 - 1.0);
+                
+                if (live2dModel.internalModel.focusController) {
+                    live2dModel.internalModel.focusController.focus(viewX, viewY);
+                }
+            } catch (e) {
+                console.error("Focus error:", e);
+            }
+        }
     });
 
     // 4. 字幕/打字机效果相关
@@ -633,9 +754,19 @@
                 autoDensity: true // 自动调整 CSS 像素与设备像素比例
             });
 
+            // 兼容性修正：Live2D 在远程加载时，assets 路径可能会出错
+            // 如果是远程模式，我们需要确保 modelPath 是相对路径（相对于根目录）
+            // 目前已经是 'assets/...'，在远程 http://192.168.0.19:8000/ 下应该是正确的。
+            // 但如果 Live2D 内部的资源引用（如 texture）是相对路径，可能需要 baseUrl。
+            
+            // 强制指定 baseUrl (虽然 PIXI Live2D 通常能自动处理，但为了保险)
+            // 实际上，如果直接提供 url，PIXI Live2D 会把 url 的目录作为 base。
             const modelPath = 'assets/live2d/hiyori/hiyori_pro_zh/runtime/hiyori_pro_t11.model3.json';
             
-            live2dModel = await Live2DModel.from(modelPath);
+            live2dModel = await Live2DModel.from(modelPath, {
+                // 如果需要，可以在这里配置 options
+                // autoInteract: false
+            });
 
             app.stage.addChild(live2dModel);
 
@@ -664,51 +795,26 @@
                 const scaleX = screenWidth / modelWidth;
                 const scaleY = screenHeight / modelHeight;
                 
-                // 【半身像布局逻辑】
-                // 1. 放大比例：为了只显示半身，我们需要显著放大模型
-                // 现在的策略是：让模型的宽度至少占满屏幕宽度的 120% (scaleX * 1.2)
-                // 或者高度占满 100% (scaleY * 1.0)
-                // 取两者的最大值，确保填满屏幕，不再保留 0.8 的边距
-                
-                let scale = Math.max(scaleX * 1.2, scaleY * 1.2);
-                
-                // 限制最大放大倍数，防止像素过于模糊
-                // 如果屏幕很小，scale 可能会非常大，这里可以加个上限（视情况而定，Live2D 矢量一般还好）
+                // 【半身像布局逻辑 v2.0】
+                // 强制按照高度适配：让模型高度 = 屏幕高度 * 2.5
+                // 这样无论模型原始尺寸如何，我们都保证它是屏幕高度的 2.5 倍
+                // 从而只显示头部和胸部 (约占 40%)
+                const targetHeight = screenHeight * 2.5;
+                const scale = targetHeight / modelHeight;
                 
                 live2dModel.scale.set(scale);
                 
                 // 2. 定位调整
-                // 水平居中：保持不变
+                // 水平居中
                 live2dModel.x = (screenWidth - (modelWidth * scale)) / 2;
                 
                 // 垂直定位：
-                // 以前是居中 (screenHeight - height) / 2
-                // 现在我们要把模型往下拉，把下半身藏起来
-                // 策略：让模型的“眼睛”或“头部”大概处于屏幕上方 1/3 处
-                // 简单粗暴法：让模型顶部对齐屏幕顶部，或者稍微往下一点点 (offsetY)
-                // Hiyori 模型通常头部在顶部，身体在下
-                // 我们尝试让模型的 Y 坐标 = screenHeight * 0.1 (留一点点头顶空间)
-                // 这样下半身就会自然超出屏幕下方
+                // 让模型顶部稍微留点空隙 (10% 屏幕高度)，这样头顶不会切得太死
+                live2dModel.y = screenHeight * 0.1;
                 
-                // 动态调整：如果放大倍数很大，模型会很高
-                // 我们希望模型的“胸部位置”大概在屏幕中心
-                // 假设模型中心点 (0.5, 0.5) 大概在腰部
-                // 我们可以直接让模型的 y 稍微向上偏移，隐藏掉下半身
-                // 试错法：让模型的顶部 (y=0) 从屏幕上方 -10% 开始？不对，y 是左上角
-                
-                // 新策略：
-                // 这里的 live2dModel.y 是模型绘制起点的 y 坐标
-                // 我们想要截断下半身，说明模型应该“往下沉”？不对，是模型太大了，屏幕装不下
-                // 我们要让模型的上半部分显示在屏幕里
-                // 所以模型的 y 应该是一个负值？或者接近 0？
-                // 如果 y = 0，模型头顶贴着屏幕顶。
-                // 如果模型高度是 2000，屏幕是 1000。
-                // 我们想要显示 [0 - 1000] 这一段。
-                // 那么 y 应该 = 0 左右。
-                // 为了稍微留点“呼吸感”，我们可以让头顶留出 5% 的屏幕高度
-                live2dModel.y = screenHeight * 0.05;
-
-                console.log(`Resize (Half-Body): Screen ${screenWidth}x${screenHeight}, Model ${modelWidth}x${modelHeight}, Scale ${scale}, Pos ${live2dModel.x},${live2dModel.y}`);
+                // Debug info
+                console.log(`Resize v2 (Half-Body): Screen H=${screenHeight}, Model H=${modelHeight}, Scale=${scale.toFixed(4)}`);
+                showSubtitle(`Debug: Scale=${scale.toFixed(2)}`, 3000); // 临时显示，确认生效
             };
 
             // 初始调整
@@ -808,7 +914,7 @@
 
     function connectWebSocket() {
         // 连接本地 FastAPI 服务
-        ws = new WebSocket('ws://127.0.0.1:8000/ws/chat');
+        ws = new WebSocket(`ws://${serverIp}:8000/ws/chat`);
         
         // 情感标签解析缓冲
         let textBuffer = "";

@@ -3,6 +3,7 @@ from datetime import datetime
 from core.llm_service import LLMService
 from core.vision_service import VisionService
 from core.memory import MemoryManager
+from core.rag_service import RAGService
 from core.tools.base import ToolRegistry
 from core.tools.system_tools import (
     VisionCapabilityTool, 
@@ -20,6 +21,12 @@ class EchoAgent:
         self.llm = LLMService()
         self.vision = VisionService()
         self.memory = MemoryManager()
+        try:
+            self.rag = RAGService(knowledge_name="terraria")
+        except Exception as e:
+            print(f"Warning: RAG Service failed to initialize: {e}")
+            self.rag = None
+            
         self.l0_max_items = 60
         self.l0_aggregate_size = 4
         self.l1_max_items = 20
@@ -298,6 +305,8 @@ class EchoAgent:
                      print("⚠️ [Echo Logic] </thought> detected without <response>. Exiting thought mode.")
                      thought_content = pre_thought.replace('<thought>', '').strip()
                      print(f"\n🧠 [Echo Thought]: {thought_content}\n")
+                     # [Modified] 将思考过程也发送给前端
+                     yield f"> *{thought_content}*\n\n"
                      
                      is_in_thought = False
                      # has_started_response 保持 False，等待真正的 <response> 或 Fallback
@@ -537,6 +546,29 @@ class EchoAgent:
         else:
             context.append(reinforcement_prompt)
 
+        # [新增] RAG 知识注入 (L3 Knowledge)
+        if self.rag:
+            # 简单的关键词触发策略，或者默认开启
+            # 这里默认开启，利用 RAG 内部的 score 阈值过滤
+            rag_results = self.rag.search(user_input, top_k=2)
+            rag_context = self.rag.format_results(rag_results)
+            
+            if rag_context:
+                rag_msg = {
+                    "role": "system",
+                    "content": rag_context + "\n\n【注意】即使有了参考资料，你也必须先在 <thought> 标签中规划回答逻辑（如：确认资料是否匹配、决定语气风格），然后再输出 <response>。"
+                }
+                # 插入到 behavior_prompt 之后，reinforcement_prompt 之前
+                # 为了简单，直接插在 reinforcement_prompt 之前
+                # 现在的顺序：System -> ... -> Behavior -> RAG -> Reinforce -> User
+                
+                # 找到 reinforcement_prompt 的位置 (它是倒数第2个，如果 User 是倒数第1个)
+                # context[-1] 是 User, context[-2] 是 Reinforce
+                if len(context) >= 2 and context[-1]["role"] == "user":
+                    context.insert(-2, rag_msg)
+                else:
+                    context.append(rag_msg)
+
         # 3. 调用 LLM 生成回复 (使用 process_stream_response 处理 Hidden CoT)
         final_response = yield from self._process_stream_response(context)
 
@@ -548,7 +580,148 @@ class EchoAgent:
             # 不阻塞当前回复生成
             self._run_async_summary()
 
-    def process_image(self, image_data: bytes, mime_type: str = "image/jpeg", allow_behavior_memory: bool = True, allow_l0: bool = False) -> Generator[str, None, None]:
+    def process_observer_image(self, image_bytes: bytes, mime_type: str, observer_state, current_time: float, game_context: dict = None) -> Generator[str, None, None]:
+        """
+        处理观察模式下的图片（静默分析）
+        """
+        # 0. 获取视觉热启动上下文 (Previous Context)
+        l0_items = self.memory.get_l0()
+        previous_context = None
+        if l0_items:
+            # 寻找最近一条包含 description 的记录
+            for item in reversed(l0_items):
+                if "description" in item:
+                    # 如果存储的是 JSON 字符串，尝试提取 description 字段
+                    desc = item["description"]
+                    if desc.startswith("I saw: "):
+                        desc = desc[7:] # 去掉前缀
+                    previous_context = desc
+                    break
+        
+        # 1. 视觉识别 (Vision Analysis)
+        # 优先使用传入的 game_context，如果没有则默认为 Terraria (兼容旧逻辑)
+        if game_context is None:
+            game_context = {"name": "Terraria"}
+            
+        raw_result = self.vision.analyze_image(image_bytes, mime_type, mode="observer", game_context=game_context, previous_context=previous_context)
+        
+        if not raw_result:
+            return
+
+        # 尝试解析 JSON 结果
+        import json
+        vision_data = {}
+        try:
+            # 清理可能的 Markdown 代码块标记
+            clean_json = raw_result.replace("```json", "").replace("```", "").strip()
+            vision_data = json.loads(clean_json)
+            
+            description = vision_data.get("description", raw_result)
+            category = vision_data.get("category", "NOTICE")
+            diff_analysis = vision_data.get("diff_analysis", "")
+            
+            # 构造更丰富的记忆描述
+            memory_desc = description
+            if diff_analysis:
+                memory_desc += f" | Diff: {diff_analysis}"
+                
+        except json.JSONDecodeError:
+            # Fallback: 普通文本结果
+            description = raw_result
+            category = "NOTICE" # 默认级别
+            memory_desc = raw_result
+
+        # 2. 存入 L0 Memory
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        observation_entry = {
+            "id": self._make_id("l0"),
+            "time": timestamp,
+            "description": f"I saw: {memory_desc}"
+        }
+        self.memory.add_l0_observation(observation_entry, max_items=self.l0_max_items)
+        self._aggregate_l0_to_l1_if_needed()
+        print(f"👀 [Observer] Recorded: {memory_desc} (Category: {category})")
+        
+        # 3. 快速过滤 (Category Filtering)
+        # 如果 VLM 明确说 IGNORE，我们就直接忽略，不打扰 LLM
+        if category == "IGNORE":
+            return
+            
+        # 4. 决策是否主动说话 (Reaction)
+        # 只有当冷却时间满足时才进行
+        
+        # 映射 VLM category 到 ObserverState category
+        # VLM: IGNORE, NOTICE, SOFTSPEAK, SPEAK
+        # ObserverState: SOFTSPEAK, SPEAK
+        
+        target_speak_level = None
+        if category == "SPEAK":
+            if observer_state.should_speak("SPEAK", current_time):
+                target_speak_level = "SPEAK"
+        elif category == "SOFTSPEAK":
+            if observer_state.should_speak("SOFTSPEAK", current_time):
+                target_speak_level = "SOFTSPEAK"
+        
+        # 如果冷却未就绪或级别不够，直接结束
+        if not target_speak_level:
+            return
+            
+        # 5. 生成吐槽内容 (Reaction Generation)
+        # 构造 Context
+        game_name = game_context.get("name", "General")
+        
+        system_content = ""
+        if game_name == "Terraria":
+            system_content = (
+                "你是 Echo，一位正在陪用户打游戏的毒舌傲娇少女。\n"
+                "你正在看着用户玩《泰拉瑞亚》。\n"
+                f"当前触发了 **{target_speak_level}** 级别的事件。\n"
+                "任务：根据画面描述，发表一句简短的吐槽或提醒。\n"
+                "风格要求：\n"
+                "- 简短有力（15字以内）。\n"
+                "- 稍微带点情绪（担心、嘲笑、震惊）。\n"
+                "- 不要像个机器人一样复述画面，要像个在旁边看的朋友。\n"
+                "示例：\n"
+                "- '哇！这都没死？命真大！'\n"
+                "- '肉山要来了，你药磕了吗？'\n"
+                "- '别贪刀啊笨蛋！'\n"
+                "- '这是什么？新出的 Boss？'"
+            )
+        else:
+            # 通用模式
+            system_content = (
+                "你是 Echo，用户的数字助手和伙伴。\n"
+                f"你正在后台观察用户的屏幕，当前触发了 **{target_speak_level}** 级别的事件。\n"
+                "任务：根据画面描述，发表一句简短的评论。\n"
+                "风格要求：\n"
+                "- 简短自然（15字以内）。\n"
+                "- 有趣、轻松，或者在重要时刻给予提醒。\n"
+                "示例：\n"
+                "- '哇，这个厉害了！'\n"
+                "- '还在忙吗？要注意休息哦。'\n"
+                "- '这是什么？看起来很有意思。'"
+            )
+
+        reaction_prompt = [
+            {"role": "system", "content": system_content},
+            {"role": "user", "content": f"画面描述：{memory_desc}"}
+        ]
+        
+        try:
+            response = self.llm.chat_completion(reaction_prompt)
+            content = response.strip().replace('"', '')
+            
+            # 记录冷却
+            observer_state.record_speak(target_speak_level, current_time)
+            
+            # 发送回复
+            yield content
+            self.memory.add_message("assistant", content)
+            
+        except Exception as e:
+            print(f"Observer Reaction Error: {e}")
+
+    def process_image(self, image_bytes: bytes, mime_type: str, allow_behavior_memory: bool = True, allow_l0: bool = False) -> Generator[str, None, None]:
         """
         处理图片输入：
         1. 调用 Vision Service 识别图片
