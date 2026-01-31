@@ -117,6 +117,8 @@ async def websocket_endpoint(websocket: WebSocket):
             user_input = message_data.get("content", "")
             msg_type = message_data.get("type", "text") # text, image, audio, auto_observe
             enable_tts = message_data.get("enable_tts", False) # 接收前端开关状态
+            allow_behavior_memory = True
+            allow_l0 = False
 
             # 用户主动交互，重置冷却时间
             if msg_type in ["text", "audio", "image"]:
@@ -190,6 +192,8 @@ async def websocket_endpoint(websocket: WebSocket):
                             
                             user_input = observe_prompt
                             msg_type = "text" # 转入通用回复流程
+                            allow_behavior_memory = category == "SPEAK"
+                            allow_l0 = category == "SPEAK"
                             
                             # 告诉前端：这是 Echo 主动发起的，前端不需要显示“用户发了这段话”
                             # 但需要显示 Echo 的回复
@@ -268,23 +272,20 @@ async def websocket_endpoint(websocket: WebSocket):
 
             # 处理图片
             if msg_type == "image":
-                 try:
-                     # 前端传来的 content 应该是 base64 字符串
-                     image_data_str = message_data.get("content", "")
-                     mime_type = "image/jpeg" # 默认
-                     
-                     if "base64," in image_data_str:
-                         header, encoded = image_data_str.split("base64,", 1)
-                         # 尝试从 header 提取 mime type
-                         if "data:" in header and ";" in header:
-                             mime_type = header.split("data:")[1].split(";")[0]
-                         image_bytes = base64.b64decode(encoded)
-                     else:
-                         image_bytes = base64.b64decode(image_data_str)
-                     
-                     # 调用 agent 处理
-                     full_response = ""
-                     for chunk in agent.process_image(image_bytes, mime_type):
+                try:
+                    image_data_str = message_data.get("content", "")
+                    mime_type = "image/jpeg"
+                    
+                    if "base64," in image_data_str:
+                        header, encoded = image_data_str.split("base64,", 1)
+                        if "data:" in header and ";" in header:
+                            mime_type = header.split("data:")[1].split(";")[0]
+                        image_bytes = base64.b64decode(encoded)
+                    else:
+                        image_bytes = base64.b64decode(image_data_str)
+                    
+                    full_response = ""
+                    for chunk in agent.process_image(image_bytes, mime_type, allow_behavior_memory=allow_behavior_memory, allow_l0=allow_l0):
                         full_response += chunk
                         await websocket.send_json({
                             "type": "chunk",
@@ -293,14 +294,13 @@ async def websocket_endpoint(websocket: WebSocket):
                         })
                         await asyncio.sleep(0.01)
                         
-                     # 结束标记
-                     await websocket.send_json({
+                    await websocket.send_json({
                         "type": "done",
                         "content": "",
                         "is_final": True
-                     })
-                     
-                 except Exception as e:
+                    })
+                    
+                except Exception as e:
                     error_msg = f"Image Error: {str(e)}"
                     await websocket.send_json({
                         "type": "error",
@@ -326,7 +326,7 @@ async def websocket_endpoint(websocket: WebSocket):
 
                 try:
                     chunk_id = 0
-                    for chunk in agent.chat(user_input):
+                    for chunk in agent.chat(user_input, allow_behavior_memory=allow_behavior_memory, allow_l0=allow_l0):
                         full_response += chunk
                         tts_buffer += chunk
                         

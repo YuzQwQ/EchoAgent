@@ -1,4 +1,5 @@
 from typing import Generator
+from datetime import datetime
 from core.llm_service import LLMService
 from core.vision_service import VisionService
 from core.memory import MemoryManager
@@ -19,6 +20,11 @@ class EchoAgent:
         self.llm = LLMService()
         self.vision = VisionService()
         self.memory = MemoryManager()
+        self.l0_max_items = 60
+        self.l0_aggregate_size = 4
+        self.l1_max_items = 20
+        self.l2_max_items = 50
+        self.ref_cooldown_turns = 3
         
         # 初始化工具注册表
         self.tools = ToolRegistry()
@@ -58,8 +64,182 @@ class EchoAgent:
         
         # 这里简单打印，实际需要 MemoryManager 支持 short_term_observation
         # 假设 MemoryManager 有这个接口 (如果没有，我们需要加，或者暂时不存)
-        print(f"🧠 [Memory] Recorded observation: {observation}")
-        # TODO: Implement short_term_observation in MemoryManager
+        entry = {
+            "id": self._make_id("l0"),
+            "time": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "description": observation
+        }
+        self.memory.add_l0_observation(entry, max_items=self.l0_max_items)
+        self._aggregate_l0_to_l1_if_needed()
+        print(f"🧠 [Memory] Recorded observation: {entry}")
+
+    def _make_id(self, prefix: str) -> str:
+        return f"{prefix}_{datetime.now().strftime('%Y%m%d%H%M%S')}_{random.randint(1000, 9999)}"
+
+    def _aggregate_l0_to_l1_if_needed(self):
+        l0_items = self.memory.get_l0()
+        if len(l0_items) < self.l0_aggregate_size:
+            return
+        recent = l0_items[-self.l0_aggregate_size:]
+        fragment = self._build_l1_fragment(recent)
+        if fragment:
+            self.memory.add_l1_fragment(fragment, max_items=self.l1_max_items)
+            self.memory.pop_l0_tail(self.l0_aggregate_size)
+
+    def _build_l1_fragment(self, entries: list) -> dict:
+        texts = [e.get("description", "") for e in entries if e.get("description")]
+        if not texts:
+            return {}
+        combined = "；".join(texts)
+        activity, note = self._split_activity_note(combined)
+        if not note and len(texts) > 1:
+            note = "；".join(texts[1:])
+        mood_guess = self._guess_mood(combined)
+        return {
+            "id": self._make_id("l1"),
+            "time": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "activity": activity,
+            "mood_guess": mood_guess,
+            "note": note,
+            "source_ids": [e.get("id") for e in entries if e.get("id")]
+        }
+
+    def _split_activity_note(self, observation: str):
+        if not observation:
+            return "", ""
+        import re
+        parts = re.split(r'[。！？!?；;，,\n]', observation, maxsplit=1)
+        activity = parts[0].strip()
+        note = parts[1].strip() if len(parts) > 1 else ""
+        return activity, note
+
+    def _guess_mood(self, observation: str) -> str:
+        text = (observation or "").lower()
+        if any(k in text for k in ["开心", "兴奋", "得意", "高兴", "胜利", "happy"]):
+            return "开心"
+        if any(k in text for k in ["难过", "低落", "失落", "沮丧", "sad", "哭"]):
+            return "难过"
+        if any(k in text for k in ["生气", "愤怒", "不爽", "烦", "angry"]):
+            return "生气"
+        if any(k in text for k in ["惊讶", "震惊", "surprise", "突然"]):
+            return "惊讶"
+        if any(k in text for k in ["专注", "认真", "写代码", "coding", "debug", "工作", "学习"]):
+            return "专注"
+        if any(k in text for k in ["放松", "休闲", "刷", "看视频", "relax"]):
+            return "放松"
+        return "平静"
+
+    def _tokenize(self, text: str):
+        import re
+        if not text:
+            return []
+        tokens = re.findall(r'[\u4e00-\u9fff]{2,}', text)
+        tokens += re.findall(r'[a-zA-Z0-9]{2,}', text.lower())
+        return list(dict.fromkeys(tokens))
+
+    def _select_relevant_from_layer(self, items: list, query: str, current_turn: int):
+        if not items:
+            return None
+        query_tokens = self._tokenize(query)
+        if not query_tokens:
+            return None
+        cooldown = self.memory.get_cooldown()
+        last_ref_id = cooldown.get("last_ref_id", "")
+        last_ref_turn = cooldown.get("last_ref_turn", 0)
+        best = None
+        best_score = 0
+        for item in reversed(items):
+            item_id = item.get("id", "")
+            if item_id and item_id == last_ref_id and current_turn - last_ref_turn < self.ref_cooldown_turns:
+                continue
+            text = f"{item.get('activity', '')} {item.get('note', '')} {item.get('event', '')}"
+            tokens = self._tokenize(text)
+            if not tokens:
+                continue
+            score = len(set(query_tokens) & set(tokens))
+            if score > best_score:
+                best_score = score
+                best = item
+        if best_score == 0:
+            return None
+        return best
+
+    def _select_relevant_from_l0(self, query: str, current_turn: int):
+        l0_items = self.memory.get_l0()
+        if not l0_items:
+            return None
+        query_tokens = self._tokenize(query)
+        if not query_tokens:
+            return None
+        cooldown = self.memory.get_cooldown()
+        last_ref_id = cooldown.get("last_ref_id", "")
+        last_ref_turn = cooldown.get("last_ref_turn", 0)
+        best = None
+        best_score = 0
+        for item in reversed(l0_items):
+            item_id = item.get("id", "")
+            if item_id and item_id == last_ref_id and current_turn - last_ref_turn < self.ref_cooldown_turns:
+                continue
+            text = item.get("description", "")
+            tokens = self._tokenize(text)
+            if not tokens:
+                continue
+            score = len(set(query_tokens) & set(tokens))
+            if score > best_score:
+                best_score = score
+                best = item
+        if best_score == 0:
+            return None
+        return best
+
+    def _build_layered_memory_prompt(self, query: str, allow: bool, allow_l0: bool = False):
+        if not allow:
+            return None
+        current_turn = self.memory.get_turn()
+        l1_items = self.memory.get_l1()
+        l2_items = self.memory.get_l2()
+        selected = self._select_relevant_from_layer(l1_items, query, current_turn)
+        if not selected:
+            selected = self._select_relevant_from_layer(l2_items, query, current_turn)
+        if not selected and allow_l0:
+            selected = self._select_relevant_from_l0(query, current_turn)
+        if not selected:
+            return None
+        selected_id = selected.get("id", "")
+        if selected_id:
+            self.memory.update_cooldown(selected_id, current_turn)
+        if "event" in selected:
+            time_str = selected.get("time", "")
+            event = selected.get("event", "")
+            status = selected.get("status", "")
+            return f"【上下文记忆】仅供本次回复参考，若不相关请忽略。time: {time_str} | event: {event} | status: {status}"
+        if "description" in selected:
+            time_str = selected.get("time", "")
+            desc = selected.get("description", "")
+            return f"【观察记忆】仅供本次回复参考，若不相关请忽略。time: {time_str} | description: {desc}"
+        time_str = selected.get("time", "")
+        activity = selected.get("activity", "")
+        mood = selected.get("mood_guess", "")
+        note = selected.get("note", "")
+        return f"【行为片段记忆】仅供本次回复参考，若不相关请忽略。time: {time_str} | activity: {activity} | mood_guess: {mood} | note: {note}"
+
+    def _extract_context_event(self, text: str):
+        if not text:
+            return None
+        keywords = ["项目", "任务", "计划", "今天要", "要做", "需要", "修复", "完成", "上线", "发布", "会议", "截止", "bug", "todo", "task", "project", "deadline", "fix"]
+        matched = [k for k in keywords if k in text.lower() or k in text]
+        if not matched:
+            return None
+        event = text.strip()
+        if len(event) > 200:
+            event = event[:200]
+        return {
+            "id": self._make_id("l2"),
+            "time": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "event": event,
+            "status": "active",
+            "tags": matched[:5]
+        }
 
     def _clean_content(self, text: str) -> str:
         """
@@ -299,12 +479,16 @@ class EchoAgent:
         thread.daemon = True # 设置为守护线程，防止阻塞主程序退出
         thread.start()
 
-    def chat(self, user_input: str) -> Generator[str, None, None]:
+    def chat(self, user_input: str, allow_behavior_memory: bool = True, allow_l0: bool = False) -> Generator[str, None, None]:
         """
         处理用户输入，生成回复，并管理记忆
         """
         # 1. 保存用户输入到记忆
         self.memory.add_message("user", user_input)
+        self.memory.increment_turn()
+        event = self._extract_context_event(user_input)
+        if event:
+            self.memory.add_l2_event(event, max_items=self.l2_max_items)
 
         # 2. 获取上下文
         context = self.memory.get_context()
@@ -321,6 +505,14 @@ class EchoAgent:
         else:
             # 插入新的 System Prompt
             context.insert(0, {"role": "system", "content": capabilities_prompt})
+
+        behavior_prompt = self._build_layered_memory_prompt(user_input, allow_behavior_memory, allow_l0=allow_l0)
+        if behavior_prompt:
+            behavior_msg = {"role": "system", "content": behavior_prompt}
+            if len(context) > 0 and context[-1]["role"] == "user":
+                context.insert(-1, behavior_msg)
+            else:
+                context.append(behavior_msg)
 
         # [新增] 短期逻辑强化 (Context Reinforcement)
         # 动态注入硬规则，不占用 System Prompt 长期记忆
@@ -356,7 +548,7 @@ class EchoAgent:
             # 不阻塞当前回复生成
             self._run_async_summary()
 
-    def process_image(self, image_data: bytes, mime_type: str = "image/jpeg") -> Generator[str, None, None]:
+    def process_image(self, image_data: bytes, mime_type: str = "image/jpeg", allow_behavior_memory: bool = True, allow_l0: bool = False) -> Generator[str, None, None]:
         """
         处理图片输入：
         1. 调用 Vision Service 识别图片
@@ -381,6 +573,7 @@ class EchoAgent:
         # 3. 存入记忆 (作为 System 消息或特殊的 User 消息)
         # 这里为了让 LLM 觉得是用户发的图，我们用 user role，但加标注
         self.memory.add_message("user", observation_msg)
+        self.memory.increment_turn()
         
         # 4. 触发回复生成 (就像用户发了文字一样)
         # 获取上下文
@@ -392,6 +585,14 @@ class EchoAgent:
             context[0]["content"] += "\n" + capabilities_prompt
         else:
             context.insert(0, {"role": "system", "content": capabilities_prompt})
+
+        behavior_prompt = self._build_layered_memory_prompt(description, allow_behavior_memory, allow_l0=allow_l0)
+        if behavior_prompt:
+            behavior_msg = {"role": "system", "content": behavior_prompt}
+            if len(context) > 0 and context[-1]["role"] == "user":
+                context.insert(-1, behavior_msg)
+            else:
+                context.append(behavior_msg)
 
         # 插入逻辑强化 (同 chat)
         reinforcement_content = (
