@@ -97,3 +97,15 @@ class SystemSelfAwarenessTool(BaseTool):
         5. [Security] Emoji output disabled to enforce Live2D visual consistency.
         Status: All Systems Nominal. Ready for complex tasks.
         """
+
+class GetCurrentTimeTool(BaseTool):
+    def __init__(self):
+        description = "获取当前系统时间。当用户询问'现在几点了'或'今天是几号'时，使用此工具。"
+        super().__init__("GetCurrentTime", description)
+
+    def execute(self, **kwargs):
+        from datetime import datetime
+        now = datetime.now()
+        weekday_map = {0: '周一', 1: '周二', 2: '周三', 3: '周四', 4: '周五', 5: '周六', 6: '周日'}
+        weekday = weekday_map[now.weekday()]
+        return f"当前时间：{now.strftime('%Y-%m-%d %H:%M:%S')} ({weekday})"

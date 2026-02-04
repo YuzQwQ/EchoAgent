@@ -10,7 +10,8 @@ from core.tools.system_tools import (
     TTSCapabilityTool, 
     MemoryCapabilityTool, 
     SystemSelfAwarenessTool,
-    ProjectHistoryTool
+    ProjectHistoryTool,
+    GetCurrentTimeTool
 )
 from config import config
 import random
@@ -44,6 +45,7 @@ class EchoAgent:
         self.tools.register(MemoryCapabilityTool())
         self.tools.register(SystemSelfAwarenessTool())
         self.tools.register(ProjectHistoryTool())
+        self.tools.register(GetCurrentTimeTool())
 
     def add_observation_to_context(self, observation: str):
         """
