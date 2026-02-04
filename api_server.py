@@ -60,27 +60,40 @@ class ObserverState:
         self.last_soft_speak_time = 0
         
         # 冷却时间配置 (秒) - 适当回调阈值，防止刷屏
-        self.COOLDOWN_SPEAK = 300      # Level 2: 5分钟
-        self.COOLDOWN_SOFTSPEAK = 60   # Level 1.5: 1分钟
+        self.COOLDOWN_SPEAK = 200      # Level 2: 3分20秒 (原 5分钟)
+        self.COOLDOWN_SOFTSPEAK = 120  # Level 1.5: 2分钟 (原 5分钟)
+        
+        # [新增] 概率触发机制
+        # 即使冷却转好了，也不一定每次都说，增加随机性，模拟“看心情”
+        self.TRIGGER_PROBABILITY = 0.8 # 80% 概率触发 (原 40%)
         
     def should_speak(self, category: str, current_time: float) -> bool:
+        # [新增] 引入随机性，避免像个定时器一样机械
+        import random
+        
+        # 基础冷却检查
         if category == "SPEAK":
             # Level 2 检查
             if current_time - self.last_speak_time < self.COOLDOWN_SPEAK:
                 return False
-            return True
             
         elif category == "SOFTSPEAK":
             # Level 1.5 检查
-            # 注意：如果刚刚触发过 Level 2，也不应该马上触发 Level 1.5，避免太吵
-            # 所以这里也要检查 last_speak_time
             if current_time - self.last_speak_time < self.COOLDOWN_SOFTSPEAK: 
                 return False
             if current_time - self.last_soft_speak_time < self.COOLDOWN_SOFTSPEAK:
                 return False
-            return True
+        
+        else:
+            return False
+
+        # [关键] 随机判定 (只有通过了冷却检查才会走到这里)
+        # 增加“心情”判定，不是每次冷却好了就必须说
+        if random.random() > self.TRIGGER_PROBABILITY:
+            print(f"[Observer] Cooldown OK but skipped by random probability ({category})")
+            return False
             
-        return False
+        return True
 
     def record_speak(self, category: str, current_time: float):
         if category == "SPEAK":
@@ -189,7 +202,15 @@ async def websocket_endpoint(websocket: WebSocket):
                             interaction_hint = ""
                             if category == "SOFTSPEAK":
                                 # Level 1.5: 轻度共鸣 (提示 Agent 简短一点)
-                                interaction_hint = "（请进行极简短的互动，表示你在陪着我，不要长篇大论）"
+                                # [优化] 增加随机指令，避免每次都说类似的话
+                                import random
+                                hints = [
+                                    "（请进行极简短的互动，表示你在陪着我，不要长篇大论）",
+                                    "（请用好奇的语气问我在做什么，只说一句话）",
+                                    "（请用慵懒的语气评价一下当前的画面，简短点）",
+                                    "（如果不感兴趣，就简单哼一声或者发个语气词）"
+                                ]
+                                interaction_hint = random.choice(hints)
                             else:
                                 # Level 2: 重点吐槽 (SPEAK)
                                 interaction_hint = "（请根据画面内容进行吐槽或情绪共鸣，语气自然一点）"

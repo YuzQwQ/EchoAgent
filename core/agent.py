@@ -202,33 +202,73 @@ class EchoAgent:
     def _build_layered_memory_prompt(self, query: str, allow: bool, allow_l0: bool = False):
         if not allow:
             return None
+        
+        # [Perceptual Context Logic]
+        # 1. 优先检查是否存在“感知上下文” (即最近的观察记录)
+        # 无论是否 token 匹配，只要记录够新，就作为事实前提
+        perceptual_context = ""
+        l0_items = self.memory.get_l0()
+        if l0_items and allow_l0:
+            latest_obs = l0_items[-1] # 取最新一条
+            obs_time_str = latest_obs.get("time", "")
+            
+            # 检查时效性 (假设 time 格式为 "%Y-%m-%d %H:%M:%S" 或 "%Y-%m-%d %H:%M")
+            # 这里简单起见，只要是最新一条且非空，就认为是有效的 Perceptual Context
+            # 实际上应该解析时间并计算差值 (例如 < 60s)
+            # 但由于 memory.get_turn() 不精确对应时间，我们假设 L0 的最新一条就是刚刚发生的
+            
+            desc = latest_obs.get("description", "")
+            if desc and "IGNORE" not in desc: # 排除被标记为忽略的
+                perceptual_context = f"【系统实时感知 (Perceptual Context)】\nEcho 刚刚观察到的现实世界状态（具有最高事实优先级）：\n- 时间: {obs_time_str}\n- 画面内容: {desc}\n"
+
+        # 2. 常规记忆检索 (L1/L2)
         current_turn = self.memory.get_turn()
         l1_items = self.memory.get_l1()
         l2_items = self.memory.get_l2()
+        
         selected = self._select_relevant_from_layer(l1_items, query, current_turn)
         if not selected:
             selected = self._select_relevant_from_layer(l2_items, query, current_turn)
+            
+        # 3. L0 检索 (作为 Perceptual Context 的补充，或用于查找更早的细节)
+        # 如果已经有了 Perceptual Context，这里的检索可能就不那么重要了，但还是保留以防万一
         if not selected and allow_l0:
             selected = self._select_relevant_from_l0(query, current_turn)
-        if not selected:
-            return None
-        selected_id = selected.get("id", "")
-        if selected_id:
-            self.memory.update_cooldown(selected_id, current_turn)
-        if "event" in selected:
-            time_str = selected.get("time", "")
-            event = selected.get("event", "")
-            status = selected.get("status", "")
-            return f"【上下文记忆】仅供本次回复参考，若不相关请忽略。time: {time_str} | event: {event} | status: {status}"
-        if "description" in selected:
-            time_str = selected.get("time", "")
-            desc = selected.get("description", "")
-            return f"【观察记忆】仅供本次回复参考，若不相关请忽略。time: {time_str} | description: {desc}"
-        time_str = selected.get("time", "")
-        activity = selected.get("activity", "")
-        mood = selected.get("mood_guess", "")
-        note = selected.get("note", "")
-        return f"【行为片段记忆】仅供本次回复参考，若不相关请忽略。time: {time_str} | activity: {activity} | mood_guess: {mood} | note: {note}"
+
+        memory_prompt = ""
+        if selected:
+            selected_id = selected.get("id", "")
+            if selected_id:
+                self.memory.update_cooldown(selected_id, current_turn)
+            
+            if "event" in selected:
+                time_str = selected.get("time", "")
+                event = selected.get("event", "")
+                status = selected.get("status", "")
+                memory_prompt = f"【历史记忆检索】time: {time_str} | event: {event} | status: {status}"
+            elif "description" in selected:
+                # 如果检索到的就是最新那条，为了避免重复，可以跳过（或者 Perceptual Context 已经覆盖了）
+                # 但简单起见，重复也无妨，强化印象
+                time_str = selected.get("time", "")
+                desc = selected.get("description", "")
+                memory_prompt = f"【历史观察回溯】time: {time_str} | description: {desc}"
+            else:
+                time_str = selected.get("time", "")
+                activity = selected.get("activity", "")
+                mood = selected.get("mood_guess", "")
+                note = selected.get("note", "")
+                memory_prompt = f"【历史行为片段】time: {time_str} | activity: {activity} | mood_guess: {mood} | note: {note}"
+
+        # 4. 组合最终 Prompt
+        # Perceptual Context 必须放在最前面，且明确标识
+        final_prompt = ""
+        if perceptual_context:
+            final_prompt += perceptual_context + "\n"
+        
+        if memory_prompt:
+            final_prompt += memory_prompt
+            
+        return final_prompt if final_prompt else None
 
     def _extract_context_event(self, text: str):
         if not text:
