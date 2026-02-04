@@ -59,54 +59,108 @@ class ObserverState:
         self.last_speak_time = 0
         self.last_soft_speak_time = 0
         
-        # 冷却时间配置 (秒) - 适当回调阈值，防止刷屏
-        self.COOLDOWN_SPEAK = 200      # Level 2: 3分20秒 (原 5分钟)
-        self.COOLDOWN_SOFTSPEAK = 120  # Level 1.5: 2分钟 (原 5分钟)
+        # [Speech Budget] 说话预算池
+        # 允许短时间内 burst 输出，但长期受限
+        # 简化版：滑动窗口计数器
+        self.speak_history = [] # 记录过去 N 分钟的说话时间戳
+        self.BUDGET_WINDOW = 300 # 5分钟窗口
+        self.MAX_SPEAK_IN_WINDOW = 2 # 5分钟内最多主动说话 2 次
         
-        # [新增] 概率触发机制
-        # 即使冷却转好了，也不一定每次都说，增加随机性，模拟“看心情”
-        self.TRIGGER_PROBABILITY = 0.8 # 80% 概率触发 (原 40%)
+        # [Soft Context] 内部积累状态
+        self.soft_context = {
+            "current_activity": "",
+            "since": 0,
+            "last_update": 0,
+            "observation_count": 0
+        }
         
-    def should_speak(self, category: str, current_time: float) -> bool:
-        # [新增] 引入随机性，避免像个定时器一样机械
-        import random
-        
-        # 基础冷却检查
-        if category == "SPEAK":
-            # Level 2 检查
-            if current_time - self.last_speak_time < self.COOLDOWN_SPEAK:
-                return False
+    def update_soft_context(self, description: str, current_time: float):
+        """
+        更新 Soft Context，积累观察状态
+        这里简单实现：更新时间戳和计数
+        未来可以做更复杂的语义聚合（判断是否还在做同一件事）
+        """
+        # 简单的活性衰减检查
+        if current_time - self.soft_context["last_update"] > 600: # 10分钟无更新，重置
+            self.soft_context["current_activity"] = ""
+            self.soft_context["since"] = current_time
+            self.soft_context["observation_count"] = 0
             
-        elif category == "SOFTSPEAK":
-            # Level 1.5 检查
-            if current_time - self.last_speak_time < self.COOLDOWN_SOFTSPEAK: 
-                return False
-            if current_time - self.last_soft_speak_time < self.COOLDOWN_SOFTSPEAK:
-                return False
+        self.soft_context["last_update"] = current_time
+        self.soft_context["observation_count"] += 1
         
-        else:
-            return False
-
-        # [关键] 随机判定 (只有通过了冷却检查才会走到这里)
-        # 增加“心情”判定，不是每次冷却好了就必须说
-        if random.random() > self.TRIGGER_PROBABILITY:
-            print(f"[Observer] Cooldown OK but skipped by random probability ({category})")
-            return False
+        # 简单覆盖 Activity (未来可以用 LLM 总结)
+        if not self.soft_context["current_activity"]:
+            self.soft_context["current_activity"] = description
+            self.soft_context["since"] = current_time
             
+    def check_speech_budget(self, current_time: float) -> bool:
+        """检查是否有说话余额"""
+        # 1. 清理过期记录
+        self.speak_history = [t for t in self.speak_history if current_time - t < self.BUDGET_WINDOW]
+        
+        # 2. 检查余额
+        if len(self.speak_history) >= self.MAX_SPEAK_IN_WINDOW:
+            print(f"[Observer] Budget exhausted: {len(self.speak_history)}/{self.MAX_SPEAK_IN_WINDOW} in {self.BUDGET_WINDOW}s")
+            return False
         return True
 
+    def should_speak(self, category: str, current_time: float) -> bool:
+        # 1. 更新 Soft Context (无论是否说话)
+        # 注意：这里假设外部调用 update_soft_context，或者在这里调用？
+        # 为了解耦，should_speak 只做决策
+        
+        # [重构] 重新定义等级职责
+        # IGNORE: 啥也不干
+        # NOTICE / SOFTSPEAK: 积累 Context，默认不说话，除非 Budget 溢出或者有特殊触发
+        # SPEAK: 消耗 Budget，尝试说话
+        
+        if category == "IGNORE":
+            return False
+            
+        if category == "NOTICE" or category == "SOFTSPEAK":
+            # 默认闭嘴，只积累
+            # 除非：用户长时间没互动了，且 Budget 充足，偶尔冒泡 (低概率)
+            
+            # 检查 Budget
+            if not self.check_speech_budget(current_time):
+                return False
+                
+            # 只有 SOFTSPEAK 有机会低概率冒泡
+            if category == "SOFTSPEAK":
+                 # 极低概率主动搭话 (例如 5%)
+                 import random
+                 if random.random() < 0.05:
+                     return True
+            return False
+
+        if category == "SPEAK":
+            # 强打断事件
+            # 检查 Budget
+            if not self.check_speech_budget(current_time):
+                # 即使是 SPEAK，如果 Budget 没了也得闭嘴 (或者可以设计 Emergency Override)
+                return False
+            
+            # 必须说话
+            return True
+            
+        return False
+
     def record_speak(self, category: str, current_time: float):
+        # 消耗 Budget
+        self.speak_history.append(current_time)
+        
         if category == "SPEAK":
             self.last_speak_time = current_time
         elif category == "SOFTSPEAK":
             self.last_soft_speak_time = current_time
 
     def reset_cooldown(self):
-        """用户主动交互时重置冷却，允许 Echo 立即跟进"""
-        # 注意：只重置 speak 冷却，保留 soft 冷却防止立刻碎碎念？
-        # 不，用户主动说话了，说明愿意交流，全部重置
+        """用户主动交互时重置冷却和 Budget"""
         self.last_speak_time = 0
         self.last_soft_speak_time = 0
+        # 用户主动说话了，说明愿意聊，清空 Budget 计数，允许 Echo 继续跟进
+        self.speak_history = []
 
 observer_state = ObserverState()
 
@@ -191,14 +245,18 @@ async def websocket_endpoint(websocket: WebSocket):
                         
                         # 2. 决策逻辑
                         current_ts = time.time()
-                        if observer_state.should_speak(category, current_ts):
+                        
+                        # [Refactor] 更新 Soft Context (始终执行)
+                        observer_state.update_soft_context(description, current_ts)
+                        
+                        should_speak = observer_state.should_speak(category, current_ts)
+                        
+                        if should_speak:
                             # 触发主动回复
                             print(f"[Observer] Triggering Echo response ({category})...")
                             observer_state.record_speak(category, current_ts)
                             
-                            # 构造观察模式的输入，不再使用覆盖性 Prompt，而是作为系统观察事件传入
-                            # 这样可以复用 Agent 的核心人设和记忆逻辑，保持性格一致性
-                            
+                            # 构造观察模式的输入
                             interaction_hint = ""
                             if category == "SOFTSPEAK":
                                 # Level 1.5: 轻度共鸣 (提示 Agent 简短一点)
@@ -223,20 +281,16 @@ async def websocket_endpoint(websocket: WebSocket):
                             msg_type = "text" # 转入通用回复流程
                             
                             # 开启记忆关联，确保“逻辑”一致性
-                            # 无论是 SOFTSPEAK 还是 SPEAK，都应该允许访问记忆，这样 Echo 才知道用户在做什么项目
                             allow_behavior_memory = True 
                             allow_l0 = True # 允许访问短期观察记录
-                            
-                            # 告诉前端：这是 Echo 主动发起的，前端不需要显示“用户发了这段话”
-                            # 但需要显示 Echo 的回复
-                            # 我们在下面的通用流程里处理
                             
                         else:
                             # 即使不说话，如果不是 IGNORE，也应该把这个信息存入 Agent 的短期记忆（Context）
                             # 这样用户下次说话时，Echo 知道刚才发生了什么
                             if category != "IGNORE":
+                                # 存入 L0，作为 Perceptual Context 的来源
                                 agent.add_observation_to_context(description)
-                                print("[Observer] Silent observation recorded.")
+                                print(f"[Observer] Silent observation recorded (Category: {category})")
                             
                             continue # 不触发回复
 
