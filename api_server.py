@@ -128,9 +128,9 @@ class ObserverState:
                 
             # 只有 SOFTSPEAK 有机会低概率冒泡
             if category == "SOFTSPEAK":
-                 # 极低概率主动搭话 (例如 5%)
+                 # 极低概率主动搭话 (例如 5% -> 10% 稍微调高一点，增加点存在感)
                  import random
-                 if random.random() < 0.05:
+                 if random.random() < 0.10:
                      return True
             return False
 
@@ -381,22 +381,62 @@ async def websocket_endpoint(websocket: WebSocket):
                         # 如果没有传，默认是 General
                         game_context = message_data.get("game_context", {"name": "General"})
                         
-                        # 1. 检查冷却 (快速失败)
-                        if not observer_state.should_speak("SOFTSPEAK", current_time):
-                            print("Observer: Cooldown active, ignoring image.")
-                            continue # 直接跳过，不发给 LLM
+                        # 1. 调用 Vision Service 分析 (Mode=observer)
+                        # 注意：我们这里不进行前置冷却检查，而是先分析，再决策
+                        # 这样可以保证 Soft Context 一直被更新
+                        
+                        # [Legacy] 这里的代码是旧的 observer 逻辑，已经被上面的 auto_observe 逻辑覆盖了
+                        # 前端现在的实现是发送 type='auto_observe' 而不是 type='image' mode='observer'
+                        # 但为了兼容性，我们把这里的逻辑也对齐一下
+                        
+                        analysis_result_json = vision_service.analyze_image(image_bytes, mode="observer", game_context=game_context)
+                        
+                        try:
+                            clean_json = analysis_result_json.replace("```json", "").replace("```", "").strip()
+                            analysis_data = json.loads(clean_json)
+                            description = analysis_data.get("description", "")
+                            category = analysis_data.get("category", "IGNORE")
                             
-                        # 2. 调用 Agent 进行静默分析
-                        # 我们把 game_context 传给 process_observer_image
-                        full_response = "" # [Fix] 初始化 full_response 变量
-                        for chunk in agent.process_observer_image(image_bytes, mime_type, observer_state, current_time, game_context):
-                            full_response += chunk
-                            await websocket.send_json({
-                                "type": "chunk",
-                                "content": chunk,
-                                "is_final": False
-                            })
-                            await asyncio.sleep(0.01)
+                            print(f"[Observer Legacy] Category: {category}, Desc: {description}")
+                            
+                            # 决策逻辑
+                            current_ts = time.time()
+                            observer_state.update_soft_context(description, current_ts)
+                            should_speak = observer_state.should_speak(category, current_ts)
+                            
+                            if should_speak:
+                                observer_state.record_speak(category, current_ts)
+                                
+                                # 构造输入
+                                hints = [
+                                    "（请进行极简短的互动，表示你在陪着我，不要长篇大论）",
+                                    "（请用好奇的语气问我在做什么，只说一句话）"
+                                ]
+                                import random
+                                interaction_hint = random.choice(hints) if category == "SOFTSPEAK" else "（请根据画面内容进行吐槽或情绪共鸣，语气自然一点）"
+                                
+                                observe_input = f"【系统视觉观察】用户屏幕当前显示：{description}。{interaction_hint}"
+                                
+                                # 借用 agent.chat 生成回复
+                                full_response = ""
+                                for chunk in agent.chat(observe_input, allow_behavior_memory=True, allow_l0=True):
+                                    full_response += chunk
+                                    await websocket.send_json({
+                                        "type": "chunk",
+                                        "content": chunk,
+                                        "is_final": False
+                                    })
+                                    await asyncio.sleep(0.01)
+                                    
+                            else:
+                                if category != "IGNORE":
+                                    agent.add_observation_to_context(description)
+                                    print(f"[Observer Legacy] Silent observation recorded (Category: {category})")
+                                continue
+                                
+                        except Exception as e:
+                            print(f"[Observer Legacy] Error: {str(e)}")
+                            continue
                             
                     else:
                         # 手动模式：总是回复
