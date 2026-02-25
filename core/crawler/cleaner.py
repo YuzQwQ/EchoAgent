@@ -1,5 +1,4 @@
 from bs4 import BeautifulSoup, Comment, Tag
-import re
 import logging
 
 logger = logging.getLogger(__name__)
@@ -28,7 +27,7 @@ class HTMLCleaner:
         
         # 1. 提取标题
         title = ""
-        if soup.title:
+        if soup.title and soup.title.string:
             title = soup.title.string.strip()
         
         # 2. 移除干扰元素
@@ -52,11 +51,18 @@ class HTMLCleaner:
             if not hasattr(element, 'attrs') or not element.attrs:
                 continue
                 
-            classes = element.get('class', [])
-            ids = element.get('id', '')
-            
-            # 合并检查
-            check_str = " ".join(classes) + " " + str(ids)
+            classes_value = element.get('class')
+            if isinstance(classes_value, str):
+                classes = [classes_value]
+            elif classes_value is None:
+                classes = []
+            else:
+                classes = list(classes_value)
+
+            ids_value = element.get('id')
+            ids = ids_value if isinstance(ids_value, str) else ""
+
+            check_str = " ".join(classes) + " " + ids
             check_str = check_str.lower()
             
             for keyword in self.class_blacklist:

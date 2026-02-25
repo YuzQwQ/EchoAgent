@@ -49,7 +49,7 @@ class HybridFetcher:
                 
                 # 简单的编码猜测
                 if response.encoding == 'ISO-8859-1':
-                    response.encoding = response.apparent_encoding
+                    response.encoding = response.charset_encoding or response.encoding
                     
                 return {
                     "success": True,
@@ -108,7 +108,7 @@ class HybridFetcher:
                     # 如果是 Wiki 页面，通常会有 #bodyContent 或 .mw-parser-output
                     try:
                         page.wait_for_selector("#bodyContent, .mw-parser-output, article, main", timeout=10000)
-                    except:
+                    except Exception:
                         logger.warning("[Fetcher] Target content selector not found, page might be blocked or loading.")
                     
                     # 模拟人类行为：随机滚动
@@ -157,5 +157,5 @@ class HybridFetcher:
             # 确保滚到底部触发懒加载
             page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
             time.sleep(1.0)
-        except:
+        except Exception:
             pass

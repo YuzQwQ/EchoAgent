@@ -19,8 +19,8 @@ class RAGService:
         )
         self.embedding_model = config.EMBEDDING_MODEL_ID
         
-        self.chunks = []
-        self.embeddings = None
+        self.chunks: List[Dict[str, Any]] = []
+        self.embeddings: Any = None
         
         self._load_or_build_index()
 
@@ -45,8 +45,8 @@ class RAGService:
         with open(self.raw_data_path, 'r', encoding='utf-8') as f:
             raw_data = json.load(f)
 
-        chunks = []
-        texts_to_embed = []
+        chunks: List[Dict[str, Any]] = []
+        texts_to_embed: List[str] = []
 
         # 1. 切分 Chunks
         for page in raw_data:

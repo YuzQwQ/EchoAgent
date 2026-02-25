@@ -1,8 +1,10 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from core.agent import EchoAgent
 from core.tts_service import TTSService
+from core.vision_service import VisionService
 from config import config
 import uvicorn
 import asyncio
@@ -11,6 +13,9 @@ import base64
 import re
 import speech_recognition as sr
 import io
+import cv2
+import numpy as np
+import time
 
 app = FastAPI(title="Echo API Service")
 
@@ -105,62 +110,127 @@ class ObserverState:
             return False
         return True
 
+    def reset_cooldown(self):
+        """重置冷却时间，通常在用户主动交互时调用"""
+        self.last_speak_time = 0
+        self.last_soft_speak_time = 0
+        self.speak_history = []
+
     def should_speak(self, category: str, current_time: float) -> bool:
-        # 1. 更新 Soft Context (无论是否说话)
-        # 注意：这里假设外部调用 update_soft_context，或者在这里调用？
-        # 为了解耦，should_speak 只做决策
-        
-        # [重构] 重新定义等级职责
-        # IGNORE: 啥也不干
-        # NOTICE / SOFTSPEAK: 积累 Context，默认不说话，除非 Budget 溢出或者有特殊触发
-        # SPEAK: 消耗 Budget，尝试说话
-        
         if category == "IGNORE":
             return False
-            
+
         if category == "NOTICE" or category == "SOFTSPEAK":
-            # 默认闭嘴，只积累
-            # 除非：用户长时间没互动了，且 Budget 充足，偶尔冒泡 (低概率)
-            
-            # 检查 Budget
             if not self.check_speech_budget(current_time):
                 return False
-                
-            # 只有 SOFTSPEAK 有机会低概率冒泡
+
             if category == "SOFTSPEAK":
-                 # 极低概率主动搭话 (例如 5% -> 10% 稍微调高一点，增加点存在感)
-                 import random
-                 if random.random() < 0.10:
-                     return True
+                import random
+                if random.random() < 0.10:
+                    return True
             return False
 
         if category == "SPEAK":
-            # 强打断事件
-            # 检查 Budget
             if not self.check_speech_budget(current_time):
-                # 即使是 SPEAK，如果 Budget 没了也得闭嘴 (或者可以设计 Emergency Override)
                 return False
-            
-            # 必须说话
             return True
-            
+
         return False
 
     def record_speak(self, category: str, current_time: float):
-        # 消耗 Budget
         self.speak_history.append(current_time)
-        
+
         if category == "SPEAK":
             self.last_speak_time = current_time
         elif category == "SOFTSPEAK":
             self.last_soft_speak_time = current_time
 
-    def reset_cooldown(self):
-        """用户主动交互时重置冷却和 Budget"""
-        self.last_speak_time = 0
-        self.last_soft_speak_time = 0
-        # 用户主动说话了，说明愿意聊，清空 Budget 计数，允许 Echo 继续跟进
-        self.speak_history = []
+class ObserverChangeDetector:
+    def __init__(self):
+        self.prev_gray = None
+        self.stable_count = 0
+        self.last_trigger_time = 0
+        self.last_trigger_level = ""
+        self.sustained_start = 0
+        self.analysis_width = 160
+        self.analysis_height = 90
+        self.pixel_diff_threshold = 25
+        self.change_light = 0.003
+        self.change_medium = 0.01
+        self.change_strong = 0.03
+        self.stable_frames = 2
+        self.min_interval = 2.5
+        self.strong_min_interval = 0.8
+        self.debounce = 1.5
+        self.max_wait = 6.0
+
+    def _decode_gray(self, image_bytes: bytes):
+        arr = np.frombuffer(image_bytes, np.uint8)
+        frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+        if frame is None:
+            return None
+        resized = cv2.resize(frame, (self.analysis_width, self.analysis_height), interpolation=cv2.INTER_AREA)
+        gray = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY)
+        gray = cv2.GaussianBlur(gray, (5, 5), 0)
+        return gray
+
+    def _level(self, change_ratio: float) -> str:
+        if change_ratio >= self.change_strong:
+            return "strong"
+        if change_ratio >= self.change_medium:
+            return "medium"
+        if change_ratio >= self.change_light:
+            return "light"
+        return "idle"
+
+    def should_trigger(self, image_bytes: bytes, now_ts: float) -> bool:
+        gray = self._decode_gray(image_bytes)
+        if gray is None:
+            return True
+        if self.prev_gray is None:
+            self.prev_gray = gray
+            return False
+        diff = cv2.absdiff(gray, self.prev_gray)
+        self.prev_gray = gray
+        changed = np.count_nonzero(diff > self.pixel_diff_threshold)
+        change_ratio = changed / diff.size
+        level = self._level(change_ratio)
+
+        if level == "idle":
+            self.stable_count = 0
+            self.sustained_start = 0
+            return False
+
+        if not self.sustained_start:
+            self.sustained_start = now_ts
+
+        if level in ["medium", "strong"]:
+            self.stable_count += 1
+        else:
+            self.stable_count = 0
+
+        debounced = self.last_trigger_level == level and (now_ts - self.last_trigger_time) < self.debounce
+
+        if level == "strong" and (now_ts - self.last_trigger_time) >= self.strong_min_interval and not debounced:
+            self.last_trigger_level = level
+            self.last_trigger_time = now_ts
+            self.stable_count = 0
+            return True
+
+        if self.stable_count >= self.stable_frames and (now_ts - self.last_trigger_time) >= self.min_interval and not debounced:
+            self.last_trigger_level = level
+            self.last_trigger_time = now_ts
+            self.stable_count = 0
+            return True
+
+        if self.sustained_start and (now_ts - self.sustained_start) >= self.max_wait and (now_ts - self.last_trigger_time) >= self.min_interval:
+            self.last_trigger_level = level
+            self.last_trigger_time = now_ts
+            self.stable_count = 0
+            self.sustained_start = now_ts
+            return True
+
+        return False
 
 observer_state = ObserverState()
 
@@ -192,15 +262,13 @@ def sanitize_text_for_tts(text: str) -> str:
     
     return text
 
-from core.vision_service import VisionService
-import time
-
 vision_service = VisionService()
 
 @app.websocket("/ws/chat")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     print("WebSocket connected")
+    change_detector = ObserverChangeDetector()
     
     try:
         while True:
@@ -228,6 +296,10 @@ async def websocket_endpoint(websocket: WebSocket):
                     else:
                          image_bytes = base64.b64decode(image_data_str)
                     
+                    current_ts = time.time()
+                    if not change_detector.should_trigger(image_bytes, current_ts):
+                        continue
+
                     # 1. 调用 Vision Service 分析 (Mode=observer)
                     # 这里的 analyze_image 现在返回 JSON 字符串
                     analysis_result_json = vision_service.analyze_image(image_bytes, mode="observer")
@@ -244,8 +316,6 @@ async def websocket_endpoint(websocket: WebSocket):
                         print(f"[Observer] Category: {category}, Desc: {description}")
                         
                         # 2. 决策逻辑
-                        current_ts = time.time()
-                        
                         # [Refactor] 更新 Soft Context (始终执行)
                         observer_state.update_soft_context(description, current_ts)
                         
@@ -389,6 +459,9 @@ async def websocket_endpoint(websocket: WebSocket):
                         # 前端现在的实现是发送 type='auto_observe' 而不是 type='image' mode='observer'
                         # 但为了兼容性，我们把这里的逻辑也对齐一下
                         
+                        if not change_detector.should_trigger(image_bytes, time.time()):
+                            continue
+
                         analysis_result_json = vision_service.analyze_image(image_bytes, mode="observer", game_context=game_context)
                         
                         try:
@@ -468,7 +541,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 # 流式回复 + TTS 分句缓冲
                 full_response = ""
                 tts_buffer = ""
-                tts_queue = asyncio.Queue()
+                tts_queue: asyncio.Queue = asyncio.Queue()
                 
                 # 启动 TTS 消费者任务 (Single Worker)
                 tts_task = asyncio.create_task(tts_worker(websocket, tts_queue, tts_service))
@@ -591,7 +664,7 @@ async def tts_worker(websocket: WebSocket, queue: asyncio.Queue, service: TTSSer
                     "type": "error",
                     "content": "语音生成失败，请检查 TTS 服务连接"
                 })
-            except:
+            except Exception:
                 pass # 如果 websocket 断了就不管了
         finally:
             queue.task_done()
@@ -601,12 +674,25 @@ def health_check():
     return {"status": "ok", "model": config.PRIMARY_MODEL_NAME}
 
 # [关键修正] 必须在所有 API 路由定义完成后，最后挂载静态文件到根路径
-# 否则静态文件中间件会拦截掉 WebSocket 握手请求，导致 500 错误
+# 否则静态文件中间件会拦截掉 WebSocket 握手请求，导致 404/500 错误
+# 另外，FastAPI 的 StaticFiles 默认行为会接管所有以 mount path 开头的请求
+# 即使我们定义了 @app.websocket("/ws/chat")，如果 "/" 被 mount 了，且 StaticFiles 优先级高（其实取决于定义顺序）
+# 但在 FastAPI 中，mount 是子应用，通常不应该拦截已定义的路由？
+# 实际上，如果 mount 到了 "/"，它就是一个 catch-all。
+# 所以，我们应该：
+# 1. 确保所有 API 和 WebSocket 路由都在 mount 之前定义（已满足）
+# 2. 或者，不要 mount 到 "/"，而是 mount 到 "/ui"，然后在 "/" 做一个 redirect。
+# 为了稳妥，我们采用 redirect 方案。
+
 try:
-    app.mount("/", StaticFiles(directory="desktop-app", html=True), name="static")
+    app.mount("/ui", StaticFiles(directory="desktop-app", html=True), name="static")
 except Exception as e:
     print(f"Warning: Failed to mount frontend static files: {e}")
 
+@app.get("/")
+async def root():
+    return RedirectResponse(url="/ui/index.html")
+
 if __name__ == "__main__":
     # 开发模式下运行
-    uvicorn.run("api_server:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("api_server:app", host="0.0.0.0", port=18000, reload=True)

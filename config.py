@@ -7,12 +7,16 @@ load_dotenv(override=True)
 def load_system_prompt():
     """从文件加载 System Prompt"""
     try:
-        prompt_path = os.path.join(os.getcwd(), "core", "system_prompt.md")
-        if os.path.exists(prompt_path):
-            with open(prompt_path, "r", encoding="utf-8") as f:
-                content = f.read().strip()
-                # print(f"DEBUG: Loaded System Prompt from {prompt_path} (Length: {len(content)})")
-                return content
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        candidate_paths = [
+            os.path.join(base_dir, "core", "system_prompt.md"),
+            os.path.join(os.getcwd(), "core", "system_prompt.md")
+        ]
+        for prompt_path in candidate_paths:
+            if os.path.exists(prompt_path):
+                with open(prompt_path, "r", encoding="utf-8") as f:
+                    content = f.read().strip()
+                    return content
     except Exception as e:
         print(f"Warning: Failed to load system_prompt.md: {e}")
     

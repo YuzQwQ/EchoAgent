@@ -1,7 +1,6 @@
 from simhash import Simhash
 import sqlite3
 import os
-import re
 import logging
 from urllib.parse import urlparse, parse_qsl, urlencode, urlunparse
 
@@ -91,7 +90,7 @@ class Deduplicator:
                     conn.close()
                     logger.info(f"[Dedup] Content duplicate (dist={dist}): {norm_url}")
                     return True
-            except:
+            except Exception:
                 continue
                 
         # 不重复，写入数据库

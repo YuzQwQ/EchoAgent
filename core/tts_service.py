@@ -2,7 +2,7 @@ import base64
 import edge_tts
 import httpx
 from config import config
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+from tenacity import retry, stop_after_attempt, wait_exponential
 
 class TTSService:
     def __init__(self):

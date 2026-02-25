@@ -1,6 +1,5 @@
 import httpx
 import json
-import re
 from bs4 import BeautifulSoup
 
 API_ENDPOINT = "https://terraria.fandom.com/zh/api.php"

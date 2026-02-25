@@ -1,6 +1,6 @@
 import json
 import os
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any
 from config import config, load_system_prompt
 
 class MemoryManager:
@@ -190,16 +190,19 @@ class MemoryManager:
         
         context = []
         
-        # 1. System Prompt (动态加载，支持热更新)
+        # 1. System Prompt
         context.append({"role": "system", "content": load_system_prompt()})
         
-        # 2. Summary (如果存在)
+        # 2. Summary
         if summary:
-            summary_prompt = f"【前情提要】\n之前的对话摘要：{summary}\n（请基于此背景继续对话，但不要重复摘要内容）"
-            context.append({"role": "system", "content": summary_prompt})
+            context.append({"role": "system", "content": f"【摘要】{summary}"})
             
-        # 3. Recent Messages
-        context.extend(messages)
+        # 3. Recent Messages (Max 10 rounds = 20 msgs)
+        # 如果消息太多，只取最近 N 条
+        max_msgs = config.MAX_HISTORY_ROUNDS * 2
+        recent_messages = messages[-max_msgs:] if len(messages) > max_msgs else messages
+        
+        context.extend(recent_messages)
         
         return context
 

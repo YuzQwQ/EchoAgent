@@ -109,3 +109,35 @@ class GetCurrentTimeTool(BaseTool):
         weekday_map = {0: '周一', 1: '周二', 2: '周三', 3: '周四', 4: '周五', 5: '周六', 6: '周日'}
         weekday = weekday_map[now.weekday()]
         return f"当前时间：{now.strftime('%Y-%m-%d %H:%M:%S')} ({weekday})"
+
+class ClipboardTool(BaseTool):
+    def __init__(self):
+        description = (
+            "【系统剪贴板接口】\n"
+            "必须使用此工具来与用户的剪贴板交互，严禁编造剪贴板内容。\n"
+            "- 读取：当用户询问'剪贴板有什么'、'粘贴'、'看看剪贴板'时，必须调用 action='read'。\n"
+            "- 写入：当用户要求'复制'、'写入剪贴板'时，必须调用 action='write' 并提供 content。"
+        )
+        super().__init__("Clipboard", description)
+
+    def execute(self, action: str = "read", content: str = "", **kwargs):
+        import pyperclip
+        try:
+            if action == "read":
+                text = pyperclip.paste()
+                if not text:
+                    return "【剪贴板】内容为空。"
+                # 截断过长内容，避免 Token 爆炸
+                preview = text[:500] + "..." if len(text) > 500 else text
+                return f"【剪贴板内容读取成功】\n{preview}"
+            
+            elif action == "write":
+                if not content:
+                    return "【错误】写入剪贴板需要提供 content 参数。"
+                pyperclip.copy(content)
+                return "【成功】已将内容写入系统剪贴板。"
+            
+            else:
+                return f"【错误】不支持的操作类型：{action}。请使用 'read' 或 'write'。"
+        except Exception as e:
+            return f"【剪贴板操作失败】错误信息：{str(e)}"

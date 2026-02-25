@@ -44,7 +44,7 @@ def fetch_page_content(title):
         # Fandom API 有时会返回 200 但包含 error
         try:
             data = response.json()
-        except:
+        except Exception:
             print(f"Error parsing JSON for {title}")
             return None
             

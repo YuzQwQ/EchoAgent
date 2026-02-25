@@ -11,9 +11,21 @@ class BaseTool(ABC):
         pass
 
     def to_dict(self) -> Dict[str, Any]:
+        """转换为 OpenAI Function Schema"""
         return {
-            "name": self.name,
-            "description": self.description
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "description": "Specific action to perform"},
+                        "content": {"type": "string", "description": "Content for the action (e.g. text to write)"}
+                    },
+                    "required": ["action"]
+                }
+            }
         }
 
 class ToolRegistry:

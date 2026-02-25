@@ -257,7 +257,7 @@
         <h3 style="margin-top: 0; color: #333;">设置</h3>
         <div style="margin-bottom: 15px;">
             <label style="display: block; margin-bottom: 5px; color: #555;">后端地址 (Server IP):</label>
-            <input type="text" id="server-ip-input" placeholder="127.0.0.1" style="width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 6px;">
+            <input type="text" id="server-ip-input" placeholder="127.0.0.1:18000" style="width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 6px;">
         </div>
         <div style="margin-bottom: 15px;">
             <label style="display: block; margin-bottom: 5px; color: #555;">观察模式 (Observer Mode):</label>
@@ -302,12 +302,37 @@
     // 配置加载
     // 如果是通过 HTTP 加载的，优先使用当前 URL 的 Host 作为 Server IP
     // 这样就不用手动改 localStorage 了
-    let defaultIp = '127.0.0.1';
+    let defaultAddress = '127.0.0.1:18000';
     if (location.protocol.startsWith('http')) {
-        defaultIp = location.hostname;
+        defaultAddress = location.host;
     }
-    let serverIp = localStorage.getItem('server_ip') || defaultIp;
+    let serverIp = localStorage.getItem('server_ip') || defaultAddress;
     let observerMode = localStorage.getItem('observer_mode') || 'general';
+    function normalizeServerAddress(value) {
+        const raw = (value || '').trim();
+        if (!raw) {
+            return { host: '127.0.0.1', port: 18000 };
+        }
+        let v = raw.replace(/^https?:\/\//i, '').replace(/^wss?:\/\//i, '');
+        v = v.replace(/\s+/g, ':');
+        v = v.split('/')[0];
+        let host = v;
+        let port = 18000;
+        if (v.includes(':')) {
+            const parts = v.split(':');
+            host = parts[0] || '127.0.0.1';
+            const parsed = Number(parts[1]);
+            port = Number.isFinite(parsed) && parsed > 0 ? parsed : 18000;
+        } else {
+            const ipv4WithPort = v.match(/^(\d+\.\d+\.\d+\.\d+)(\d{2,5})$/);
+            if (ipv4WithPort) {
+                host = ipv4WithPort[1];
+                const parsed = Number(ipv4WithPort[2]);
+                port = Number.isFinite(parsed) && parsed > 0 ? parsed : 18000;
+            }
+        }
+        return { host: host || '127.0.0.1', port };
+    }
     
     // 设置按钮逻辑
     settingsBtn.addEventListener('click', () => {
@@ -359,8 +384,47 @@
     // 观察模式逻辑
     const { ipcRenderer } = require('electron');
     let isObserverActive = false;
-    let observerInterval = null;
-    const OBSERVER_INTERVAL_MS = 10000; // 每10秒观察一次
+    let observerTimer = null;
+    let observerStream = null;
+    let observerVideo = null;
+    let observerAnalysisCanvas = null;
+    let observerAnalysisCtx = null;
+    let observerFrameCanvas = null;
+    let observerFrameCtx = null;
+    let observerPrevGray = null;
+    let observerStableCount = 0;
+    let observerIdleCount = 0;
+    let observerEventActive = false;
+    let observerEventEnd = 0;
+    let observerBestFrame = null;
+    let observerBestChange = 0;
+    let observerLastSendTime = 0;
+    let observerPendingFrame = null;
+    let observerPendingEventType = "";
+    let observerLastEventType = "";
+    let observerLastEventTime = 0;
+    let observerSustainedStart = 0;
+    let observerEventType = "";
+    let observerNextIntervalMs = 100;
+
+    const OBSERVER_ANALYSIS_WIDTH = 160;
+    const OBSERVER_ANALYSIS_HEIGHT = 90;
+    const OBSERVER_ACTIVE_INTERVAL_MS = 100;
+    const OBSERVER_IDLE_INTERVAL_MS = 250;
+    const OBSERVER_PIXEL_DIFF_THRESHOLD = 25;
+    const OBSERVER_CHANGE_LIGHT = 0.003;
+    const OBSERVER_CHANGE_MEDIUM = 0.01;
+    const OBSERVER_CHANGE_STRONG = 0.03;
+    const OBSERVER_STABLE_FRAMES = 2;
+    const OBSERVER_IDLE_FRAMES = 6;
+    const OBSERVER_EVENT_WINDOW_MS = 800;
+    const OBSERVER_MIN_INTERVAL_MS = 2500;
+    const OBSERVER_STRONG_MIN_INTERVAL_MS = 800;
+    const OBSERVER_DEBOUNCE_MS = 1500;
+    const OBSERVER_MAX_WAIT_MS = 6000;
+    const OBSERVER_SEND_MAX_WIDTH = 1280;
+    const OBSERVER_SEND_MAX_HEIGHT = 720;
+    const OBSERVER_SEND_QUALITY = 0.7;
 
     observerBtn.addEventListener('click', () => {
         isObserverActive = !isObserverActive;
@@ -376,73 +440,243 @@
     });
 
     function startObserverLoop() {
-        // 立即执行一次
-        captureAndSendScreen();
-        // 启动定时器
-        observerInterval = setInterval(captureAndSendScreen, OBSERVER_INTERVAL_MS);
+        initObserverCapture()
+            .then(() => scheduleObserverAnalysis(0))
+            .catch((e) => {
+                console.error("Screen capture failed:", e);
+                showSubtitle('截图失败: ' + e.message, 3000);
+                isObserverActive = false;
+                observerBtn.classList.remove('active');
+                stopObserverLoop();
+            });
     }
 
     function stopObserverLoop() {
-        if (observerInterval) {
-            clearInterval(observerInterval);
-            observerInterval = null;
+        if (observerTimer) {
+            clearTimeout(observerTimer);
+            observerTimer = null;
         }
+        if (observerStream) {
+            observerStream.getTracks().forEach(track => track.stop());
+        }
+        observerStream = null;
+        observerVideo = null;
+        observerAnalysisCanvas = null;
+        observerAnalysisCtx = null;
+        observerFrameCanvas = null;
+        observerFrameCtx = null;
+        observerPrevGray = null;
+        observerStableCount = 0;
+        observerIdleCount = 0;
+        observerEventActive = false;
+        observerEventEnd = 0;
+        observerBestFrame = null;
+        observerBestChange = 0;
+        observerPendingFrame = null;
+        observerPendingEventType = "";
+        observerSustainedStart = 0;
+        observerEventType = "";
     }
 
-    async function captureAndSendScreen() {
+    async function initObserverCapture() {
         if (!isConnected) return;
-        
-        try {
-            const sourceId = await ipcRenderer.invoke('get-screen-source-id');
-            if (!sourceId) throw new Error("No screen source found");
+        if (observerStream) return;
+        const sourceId = await ipcRenderer.invoke('get-screen-source-id');
+        if (!sourceId) throw new Error("No screen source found");
 
-            const stream = await navigator.mediaDevices.getUserMedia({
-                audio: false,
-                video: {
-                    mandatory: {
-                        chromeMediaSource: 'desktop',
-                        chromeMediaSourceId: sourceId,
-                        maxWidth: 1920,
-                        maxHeight: 1080
-                    }
+        observerStream = await navigator.mediaDevices.getUserMedia({
+            audio: false,
+            video: {
+                mandatory: {
+                    chromeMediaSource: 'desktop',
+                    chromeMediaSourceId: sourceId,
+                    maxWidth: 1920,
+                    maxHeight: 1080
                 }
-            });
-            
-            const video = document.createElement('video');
-            video.srcObject = stream;
-            video.onloadedmetadata = () => {
-                video.play();
-                const canvas = document.createElement('canvas');
-                canvas.width = video.videoWidth;
-                canvas.height = video.videoHeight;
-                const ctx = canvas.getContext('2d');
-                ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-                
-                const base64Data = canvas.toDataURL('image/jpeg', 0.8);
-                
-                // 发送
-                ws.send(JSON.stringify({
-                    type: 'image',
-                    content: base64Data,
-                    mode: 'observer', // 标记为观察模式
-                    game_context: {
-                        name: observerMode === 'terraria' ? 'Terraria' : 'General'
-                    }
-                }));
-                
-                // 清理
-                stream.getTracks().forEach(track => track.stop());
-                video.remove();
-                canvas.remove();
+            }
+        });
+
+        observerVideo = document.createElement('video');
+        observerVideo.srcObject = observerStream;
+
+        await new Promise((resolve) => {
+            observerVideo.onloadedmetadata = () => {
+                observerVideo.play();
+                resolve();
             };
-            
-        } catch (e) {
-            console.error("Screen capture failed:", e);
-            showSubtitle('截图失败: ' + e.message, 3000);
-            isObserverActive = false;
-            observerBtn.classList.remove('active');
-            stopObserverLoop();
+        });
+
+        observerAnalysisCanvas = document.createElement('canvas');
+        observerAnalysisCanvas.width = OBSERVER_ANALYSIS_WIDTH;
+        observerAnalysisCanvas.height = OBSERVER_ANALYSIS_HEIGHT;
+        observerAnalysisCtx = observerAnalysisCanvas.getContext('2d');
+        observerFrameCanvas = document.createElement('canvas');
+        observerFrameCtx = observerFrameCanvas.getContext('2d');
+        observerPrevGray = null;
+        observerStableCount = 0;
+        observerIdleCount = 0;
+        observerEventActive = false;
+        observerBestFrame = null;
+        observerBestChange = 0;
+        observerPendingFrame = null;
+        observerPendingEventType = "";
+        observerSustainedStart = 0;
+        observerEventType = "";
+        observerNextIntervalMs = OBSERVER_ACTIVE_INTERVAL_MS;
+    }
+
+    function scheduleObserverAnalysis(delayMs) {
+        if (!isObserverActive) return;
+        if (observerTimer) clearTimeout(observerTimer);
+        observerTimer = setTimeout(observerAnalyzeFrame, delayMs);
+    }
+
+    function observerAnalyzeFrame() {
+        if (!isObserverActive || !observerVideo || !observerAnalysisCtx) return;
+        if (observerVideo.readyState < 2) {
+            scheduleObserverAnalysis(OBSERVER_ACTIVE_INTERVAL_MS);
+            return;
         }
+
+        observerAnalysisCtx.drawImage(observerVideo, 0, 0, OBSERVER_ANALYSIS_WIDTH, OBSERVER_ANALYSIS_HEIGHT);
+        const imageData = observerAnalysisCtx.getImageData(0, 0, OBSERVER_ANALYSIS_WIDTH, OBSERVER_ANALYSIS_HEIGHT);
+        const data = imageData.data;
+        const totalPixels = OBSERVER_ANALYSIS_WIDTH * OBSERVER_ANALYSIS_HEIGHT;
+        let prev = observerPrevGray;
+        if (!prev || prev.length !== totalPixels) {
+            prev = new Uint8Array(totalPixels);
+        }
+        let changed = 0;
+        let index = 0;
+        for (let i = 0; i < data.length; i += 4) {
+            const gray = (data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114) | 0;
+            const diff = Math.abs(gray - prev[index]);
+            if (diff > OBSERVER_PIXEL_DIFF_THRESHOLD) {
+                changed += 1;
+            }
+            prev[index] = gray;
+            index += 1;
+        }
+        observerPrevGray = prev;
+        const changeRatio = changed / totalPixels;
+        const changeLevel = getObserverChangeLevel(changeRatio);
+        const now = performance.now();
+
+        if (observerPendingFrame) {
+            const pendingMinInterval = observerPendingEventType === "strong" ? OBSERVER_STRONG_MIN_INTERVAL_MS : OBSERVER_MIN_INTERVAL_MS;
+            const pendingDebounced = observerPendingEventType === observerLastEventType && now - observerLastEventTime < OBSERVER_DEBOUNCE_MS;
+            if (now - observerLastSendTime >= pendingMinInterval && !pendingDebounced) {
+                sendObserverFrame(observerPendingFrame, observerPendingEventType);
+                observerPendingFrame = null;
+                observerPendingEventType = "";
+            }
+        }
+
+        if (changeLevel === "idle") {
+            observerStableCount = 0;
+            observerIdleCount += 1;
+        } else {
+            observerIdleCount = 0;
+            observerStableCount = Math.min(observerStableCount + 1, OBSERVER_STABLE_FRAMES);
+        }
+
+        if (observerIdleCount >= OBSERVER_IDLE_FRAMES && !observerEventActive) {
+            observerNextIntervalMs = OBSERVER_IDLE_INTERVAL_MS;
+        } else {
+            observerNextIntervalMs = OBSERVER_ACTIVE_INTERVAL_MS;
+        }
+
+        if (changeLevel !== "idle") {
+            if (!observerSustainedStart) observerSustainedStart = now;
+        } else {
+            observerSustainedStart = 0;
+        }
+
+        if (!observerEventActive && observerStableCount >= OBSERVER_STABLE_FRAMES && (changeLevel === "medium" || changeLevel === "strong")) {
+            observerEventActive = true;
+            observerEventEnd = now + OBSERVER_EVENT_WINDOW_MS;
+            observerBestFrame = null;
+            observerBestChange = 0;
+            observerEventType = changeLevel;
+        }
+        if (changeLevel === "strong" && !observerEventActive && observerStableCount >= 1) {
+            const frame = captureObserverFrame();
+            attemptSendObserverFrame(frame, "strong");
+            observerStableCount = 0;
+            observerSustainedStart = 0;
+        }
+
+        if (observerEventActive) {
+            if (changeRatio > observerBestChange) {
+                observerBestChange = changeRatio;
+                observerBestFrame = captureObserverFrame();
+            }
+            if (now >= observerEventEnd || (changeLevel === "strong" && observerBestChange >= OBSERVER_CHANGE_STRONG)) {
+                observerEventActive = false;
+                observerStableCount = 0;
+                if (observerBestFrame) {
+                    attemptSendObserverFrame(observerBestFrame, observerEventType);
+                }
+                observerBestFrame = null;
+                observerBestChange = 0;
+            }
+        }
+
+        if (!observerEventActive && observerSustainedStart && now - observerSustainedStart >= OBSERVER_MAX_WAIT_MS) {
+            const frame = captureObserverFrame();
+            attemptSendObserverFrame(frame, "medium");
+            observerSustainedStart = now;
+        }
+
+        scheduleObserverAnalysis(observerNextIntervalMs);
+    }
+
+    function getObserverChangeLevel(changeRatio) {
+        if (changeRatio >= OBSERVER_CHANGE_STRONG) return "strong";
+        if (changeRatio >= OBSERVER_CHANGE_MEDIUM) return "medium";
+        if (changeRatio >= OBSERVER_CHANGE_LIGHT) return "light";
+        return "idle";
+    }
+
+    function captureObserverFrame() {
+        if (!observerVideo || !observerFrameCanvas || !observerFrameCtx) return null;
+        const width = observerVideo.videoWidth || 1920;
+        const height = observerVideo.videoHeight || 1080;
+        const scale = Math.min(1, OBSERVER_SEND_MAX_WIDTH / width, OBSERVER_SEND_MAX_HEIGHT / height);
+        const targetWidth = Math.max(1, Math.round(width * scale));
+        const targetHeight = Math.max(1, Math.round(height * scale));
+        observerFrameCanvas.width = targetWidth;
+        observerFrameCanvas.height = targetHeight;
+        observerFrameCtx.drawImage(observerVideo, 0, 0, targetWidth, targetHeight);
+        return observerFrameCanvas.toDataURL('image/jpeg', OBSERVER_SEND_QUALITY);
+    }
+
+    function attemptSendObserverFrame(dataUrl, eventType) {
+        if (!dataUrl) return;
+        const now = performance.now();
+        const minInterval = eventType === "strong" ? OBSERVER_STRONG_MIN_INTERVAL_MS : OBSERVER_MIN_INTERVAL_MS;
+        const debounced = eventType === observerLastEventType && now - observerLastEventTime < OBSERVER_DEBOUNCE_MS;
+        if (now - observerLastSendTime < minInterval || debounced) {
+            observerPendingFrame = dataUrl;
+            observerPendingEventType = eventType;
+            return;
+        }
+        sendObserverFrame(dataUrl, eventType);
+    }
+
+    function sendObserverFrame(dataUrl, eventType) {
+        if (!isConnected || !ws || ws.readyState !== 1) return;
+        observerLastSendTime = performance.now();
+        observerLastEventType = eventType;
+        observerLastEventTime = observerLastSendTime;
+        ws.send(JSON.stringify({
+            type: 'image',
+            content: dataUrl,
+            mode: 'observer',
+            game_context: {
+                name: observerMode === 'terraria' ? 'Terraria' : 'General'
+            }
+        }));
     }
 
     // 动作演示面板逻辑
@@ -935,7 +1169,8 @@
 
     function connectWebSocket() {
         // 连接本地 FastAPI 服务
-        ws = new WebSocket(`ws://${serverIp}:8000/ws/chat`);
+        const { host, port } = normalizeServerAddress(serverIp);
+        ws = new WebSocket(`ws://${host}:${port}/ws/chat`);
         
         // 情感标签解析缓冲
         let textBuffer = "";

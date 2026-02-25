@@ -1,18 +1,10 @@
-from typing import Generator
+from typing import Generator, Optional, Dict, Any
 from datetime import datetime
 from core.llm_service import LLMService
 from core.vision_service import VisionService
 from core.memory import MemoryManager
 from core.rag_service import RAGService
 from core.tools.base import ToolRegistry
-from core.tools.system_tools import (
-    VisionCapabilityTool, 
-    TTSCapabilityTool, 
-    MemoryCapabilityTool, 
-    SystemSelfAwarenessTool,
-    ProjectHistoryTool,
-    GetCurrentTimeTool
-)
 from config import config
 import random
 import copy
@@ -40,12 +32,22 @@ class EchoAgent:
 
     def _register_core_tools(self):
         """注册核心系统能力工具"""
+        from core.tools.system_tools import (
+            VisionCapabilityTool, 
+            TTSCapabilityTool, 
+            MemoryCapabilityTool, 
+            SystemSelfAwarenessTool,
+            ProjectHistoryTool,
+            GetCurrentTimeTool,
+            ClipboardTool
+        )
         self.tools.register(VisionCapabilityTool())
         self.tools.register(TTSCapabilityTool())
         self.tools.register(MemoryCapabilityTool())
         self.tools.register(SystemSelfAwarenessTool())
         self.tools.register(ProjectHistoryTool())
         self.tools.register(GetCurrentTimeTool())
+        self.tools.register(ClipboardTool())
 
     def add_observation_to_context(self, observation: str):
         """
@@ -347,11 +349,9 @@ class EchoAgent:
                      print("⚠️ [Echo Logic] </thought> detected without <response>. Exiting thought mode.")
                      thought_content = pre_thought.replace('<thought>', '').strip()
                      print(f"\n🧠 [Echo Thought]: {thought_content}\n")
-                     # [Modified] 将思考过程也发送给前端
-                     # yield f"> *{thought_content}*\n\n" # [Fix] Hide thought chain from user
                      
                      is_in_thought = False
-                     # has_started_response 保持 False，等待真正的 <response> 或 Fallback
+                     has_started_response = True
                      buffer = post_thought.lstrip() 
 
                 # 3. 处理 Response 内容
@@ -422,10 +422,7 @@ class EchoAgent:
                                  if "[" in buffer and "]" not in buffer:
                                      pass
                                  else:
-                                     # 尝试输出，但要保留 < 之后的部分
-                                     # 找到最后一个 < 的位置
-                                     last_bracket_index = buffer.rfind("<")
-                                     
+                                    # 尝试输出，但要保留 < 之后的部分
                                      # 如果 < 后面太长了，超过了 target_tag，说明这个 < 不是我们要找的 tag
                                      # (除非它是 <thought> 但这里只处理 response)
                                      # 简单起见，我们还是用原来的 safe_len 逻辑来兜底，但只对 < 之后的部分敏感
@@ -457,7 +454,7 @@ class EchoAgent:
                                     pass
                 
                 # 4. Fallback: 如果 buffer 过长且没有任何标签，说明模型没听话，直接输出
-                elif len(buffer) > 200 and not is_in_thought: # 增加 buffer 长度容忍度，等待 <thought> 结束
+                elif len(buffer) > 80 and not is_in_thought:
                     print("⚠️ [Echo Logic] No tags detected, falling back to raw stream.")
                     # 即使是 Fallback，也要尝试去除 </response>
                     if "</response>" in buffer:
@@ -533,6 +530,7 @@ class EchoAgent:
     def chat(self, user_input: str, allow_behavior_memory: bool = True, allow_l0: bool = False) -> Generator[str, None, None]:
         """
         处理用户输入，生成回复，并管理记忆
+        包含：RAG、Context构建、Tool Call、流式生成
         """
         # 1. 保存用户输入到记忆
         self.memory.add_message("user", user_input)
@@ -544,18 +542,49 @@ class EchoAgent:
         # 2. 获取上下文
         context = self.memory.get_context()
 
+        lower_input = user_input.lower()
+        mentions_clipboard = (
+            "剪贴板" in user_input
+            or "clipboard" in lower_input
+            or "粘贴" in user_input
+            or "paste" in lower_input
+        )
+        wants_clipboard_read = (
+            "看看" in user_input
+            or "查看" in user_input
+            or "读取" in user_input
+            or "read" in lower_input
+        )
+        wants_clipboard_write = (
+            "写入" in user_input
+            or "复制" in user_input
+            or "拷贝" in user_input
+            or "copy" in lower_input
+        )
+        clipboard_tool = self.tools.get_tool("Clipboard")
+        clipboard_result = None
+        if mentions_clipboard and clipboard_tool:
+            if wants_clipboard_write:
+                import re
+                match = re.search(r"(?:写入剪贴板|复制到剪贴板|拷贝到剪贴板|放到剪贴板|写入|复制|拷贝)[:： ]?(.*)$", user_input)
+                content = match.group(1).strip() if match else ""
+                try:
+                    clipboard_result = clipboard_tool.execute(action="write", content=content)
+                except Exception as e:
+                    clipboard_result = f"【工具结果 Clipboard.write】写入失败：{str(e)}"
+            if wants_clipboard_read:
+                try:
+                    clipboard_result = clipboard_tool.execute(action="read")
+                except Exception as e:
+                    clipboard_result = f"【工具结果 Clipboard.read】读取失败：{str(e)}"
+
         # [新增] 注入能力认知 (Context Injection)
-        # 动态获取当前工具/能力的状态描述，注入到 System Prompt 之后
-        # 我们寻找 context 中第一个 system message (通常是 system prompt) 并追加内容
-        # 如果没有找到，就新建一个
-        capabilities_prompt = self.tools.get_capabilities_prompt()
-        
-        if context and context[0]["role"] == "system":
-            # 追加到现有的 System Prompt
-            context[0]["content"] += "\n" + capabilities_prompt
-        else:
-            # 插入新的 System Prompt
-            context.insert(0, {"role": "system", "content": capabilities_prompt})
+        # 简化版：仅当系统提示里没写时才注入，或者直接移除如果 System Prompt 已经够强
+        # 这里选择保留但极简
+        # capabilities_prompt = self.tools.get_capabilities_prompt()
+        # if context and context[0]["role"] == "system":
+        #    context[0]["content"] += "\n" + capabilities_prompt
+        pass
 
         behavior_prompt = self._build_layered_memory_prompt(user_input, allow_behavior_memory, allow_l0=allow_l0)
         if behavior_prompt:
@@ -565,34 +594,42 @@ class EchoAgent:
             else:
                 context.append(behavior_msg)
 
+        if clipboard_result is not None:
+            context.append({
+                "role": "system",
+                "content": f"【工具结果】{clipboard_result}\n请基于该结果继续自然对话，不要编造。"
+            })
+
         # [新增] 短期逻辑强化 (Context Reinforcement)
-        # 动态注入硬规则，不占用 System Prompt 长期记忆
         reinforcement_content = (
-            "【逻辑守则（本次回复有效）】\n"
-            "1. **一致性检查**：回顾最近 3 轮对话，禁止自我矛盾。\n"
-            "2. **拒绝复读**：如果观点已表达过，请深入细节或换个角度，不要重复。\n"
-            "3. **收敛话题**：除非用户发起新话题，否则请聚焦当前话题，不要无故发散。\n"
-            "4. **严禁 AI 梗与 Meta 发言**：\n"
-            "   - 禁止提及 `核心指令`、`代码`、`算法`、`数据库`、`3TB`、`格式化`。\n"
-            "   - 禁止谈论“我不能违规”或“规则限制了我”。\n"
-            "5. **执行 CoT**：必须先输出 <thought>，再输出 <response>。\n"
-            "6. **严禁 Emoji**：回复中绝对禁止包含任何 Emoji 表情符号。"
+            "【守则】\n"
+            "1. **一致性**：不自相矛盾，不复读。\n"
+            "2. **聚焦**：除非用户转话题，否则聚焦当前。\n"
+            "3. **禁忌**：禁 AI 梗、Emoji、Meta 发言。\n"
+            "4. **格式**：先 <thought> 后 <response>。\n"
+            "5. **事实**：客观事实（时间/剪贴板）必须用工具。"
         )
         reinforcement_prompt = {
             "role": "system",
             "content": reinforcement_content
         }
-        # 插入在倒数第一条消息（最新的 User Input）之前
         if len(context) > 0 and context[-1]["role"] == "user":
             context.insert(-1, reinforcement_prompt)
         else:
             context.append(reinforcement_prompt)
 
         # [新增] RAG 知识注入 (L3 Knowledge)
+        should_use_rag = False
         if self.rag:
-            # 简单的关键词触发策略，或者默认开启
-            # 这里默认开启，利用 RAG 内部的 score 阈值过滤
-            rag_results = self.rag.search(user_input, top_k=2)
+            rag_keywords = [
+                "泰拉瑞亚", "terraria", "boss", "npc", "武器", "配饰", "药水",
+                "事件", "生物群落", "攻略", "流程", "指南"
+            ]
+            lower_input = user_input.lower()
+            should_use_rag = any(k in user_input for k in rag_keywords) or any(k in lower_input for k in rag_keywords)
+
+        if self.rag and should_use_rag:
+            rag_results = self.rag.search(user_input, top_k=1)
             rag_context = self.rag.format_results(rag_results)
             
             if rag_context:
@@ -600,29 +637,82 @@ class EchoAgent:
                     "role": "system",
                     "content": rag_context + "\n\n【注意】即使有了参考资料，你也必须先在 <thought> 标签中规划回答逻辑（如：确认资料是否匹配、决定语气风格），然后再输出 <response>。"
                 }
-                # 插入到 behavior_prompt 之后，reinforcement_prompt 之前
-                # 为了简单，直接插在 reinforcement_prompt 之前
-                # 现在的顺序：System -> ... -> Behavior -> RAG -> Reinforce -> User
-                
-                # 找到 reinforcement_prompt 的位置 (它是倒数第2个，如果 User 是倒数第1个)
-                # context[-1] 是 User, context[-2] 是 Reinforce
                 if len(context) >= 2 and context[-1]["role"] == "user":
                     context.insert(-2, rag_msg)
                 else:
                     context.append(rag_msg)
 
-        # 3. 调用 LLM 生成回复 (使用 process_stream_response 处理 Hidden CoT)
+        # 3. Tool Call Check (Function Calling)
+        tools_schema = [t.to_dict() for t in self.tools.get_all_tools()]
+
+        should_try_tool_call = False
+        tool_keywords = [
+            "剪贴板", "clipboard", "时间", "几点", "日期", "今天", "现在",
+            "项目历史", "最近更新", "更新记录"
+        ]
+        if any(k in user_input for k in tool_keywords) or any(k in user_input.lower() for k in tool_keywords):
+            should_try_tool_call = True
+        if clipboard_result is not None:
+            should_try_tool_call = False
+
+        try:
+            tool_call_result = None
+            if should_try_tool_call:
+                tool_call_result = self.llm.chat_completion_with_tools(context, tools=tools_schema)
+            
+            if tool_call_result and getattr(tool_call_result, 'tool_calls', None):
+                # LLM 想要调用工具
+                print(f"🔧 [Agent] LLM requested tool calls: {len(tool_call_result.tool_calls)}")
+                
+                # 将 LLM 的回复（包含 tool_calls）加入上下文
+                # 兼容性处理：转为 dict
+                if hasattr(tool_call_result, 'model_dump'):
+                    context.append(tool_call_result.model_dump())
+                elif hasattr(tool_call_result, 'to_dict'):
+                    context.append(tool_call_result.to_dict())
+                else:
+                    context.append(tool_call_result)
+                
+                for tool_call in tool_call_result.tool_calls:
+                    function_name = tool_call.function.name
+                    arguments = tool_call.function.arguments
+                    call_id = tool_call.id
+                    
+                    print(f"  -> Calling {function_name} with {arguments}")
+                    
+                    tool_instance = self.tools.get_tool(function_name)
+                    if tool_instance:
+                        try:
+                            import json
+                            kwargs = json.loads(arguments)
+                            result = tool_instance.execute(**kwargs)
+                        except Exception as e:
+                            result = f"Error executing {function_name}: {str(e)}"
+                    else:
+                        result = f"Error: Tool {function_name} not found."
+                    
+                    # 将工具执行结果加入上下文
+                    context.append({
+                        "role": "tool",
+                        "tool_call_id": call_id,
+                        "content": str(result)
+                    })
+                    print(f"  <- Result: {str(result)[:100]}...")
+        except Exception as e:
+            print(f"Tool call check failed: {e}")
+            # Continue to normal chat if tools fail
+
+        # 4. 调用 LLM 生成回复 (使用 process_stream_response 处理 Hidden CoT)
         final_response = yield from self._process_stream_response(context)
 
-        # 4. 保存 Echo 的回复到记忆
+        # 5. 保存 Echo 的回复到记忆
         if final_response:
             self.memory.add_message("assistant", final_response)
             
-            # 5. 异步触发滚动摘要
-            # 不阻塞当前回复生成
+            # 6. 异步触发滚动摘要
             self._run_async_summary()
 
-    def process_observer_image(self, image_bytes: bytes, mime_type: str, observer_state, current_time: float, game_context: dict = None) -> Generator[str, None, None]:
+    def process_observer_image(self, image_bytes: bytes, mime_type: str, observer_state, current_time: float, game_context: Optional[Dict[str, Any]] = None) -> Generator[str, None, None]:
         """
         处理观察模式下的图片（静默分析）
         """
@@ -773,7 +863,7 @@ class EchoAgent:
         yield "👀 正在观察图片..."
         
         # 1. 识别图片
-        description = self.vision.analyze_image(image_data, mime_type)
+        description = self.vision.analyze_image(image_bytes, mime_type)
         
         if "失败" in description:
             yield f"\n\n看不清这张图... ({description})"

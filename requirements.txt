@@ -6,3 +6,5 @@ websockets
 edge-tts
 SpeechRecognition
 httpx
+opencv-python
+numpy
