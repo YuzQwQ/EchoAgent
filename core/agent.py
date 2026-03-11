@@ -39,7 +39,8 @@ class EchoAgent:
             SystemSelfAwarenessTool,
             ProjectHistoryTool,
             GetCurrentTimeTool,
-            ClipboardTool
+            ClipboardTool,
+            FileTool
         )
         self.tools.register(VisionCapabilityTool())
         self.tools.register(TTSCapabilityTool())
@@ -48,6 +49,7 @@ class EchoAgent:
         self.tools.register(ProjectHistoryTool())
         self.tools.register(GetCurrentTimeTool())
         self.tools.register(ClipboardTool())
+        self.tools.register(FileTool())
 
     def add_observation_to_context(self, observation: str):
         """
@@ -578,6 +580,80 @@ class EchoAgent:
                 except Exception as e:
                     clipboard_result = f"【工具结果 Clipboard.read】读取失败：{str(e)}"
 
+        file_tool = self.tools.get_tool("File")
+        file_result = None
+        wants_file_read = False
+        wants_file_write = False
+        wants_file_append = False
+        wants_file_create = False
+        if file_tool:
+            mentions_file = (
+                "文件" in user_input
+                or "file" in lower_input
+                or ".txt" in lower_input
+                or ".log" in lower_input
+            )
+            wants_file_read = (
+                "读取文件" in user_input
+                or "打开文件" in user_input
+                or "查看文件" in user_input
+                or "读文件" in user_input
+                or "read file" in lower_input
+            )
+            wants_file_write = (
+                "写入文件" in user_input
+                or "写到文件" in user_input
+                or "保存到文件" in user_input
+                or "覆盖文件" in user_input
+                or "write file" in lower_input
+                or "save file" in lower_input
+            )
+            wants_file_append = (
+                "追加到文件" in user_input
+                or "附加到文件" in user_input
+                or "append file" in lower_input
+            )
+            wants_file_create = (
+                "新建文件" in user_input
+                or "创建文件" in user_input
+                or "新建文本文件" in user_input
+                or "创建文本文件" in user_input
+                or "create file" in lower_input
+            )
+            if mentions_file and (wants_file_read or wants_file_write or wants_file_append or wants_file_create):
+                import re
+                content = ""
+                path_part = user_input
+                if wants_file_write or wants_file_append:
+                    if "内容" in user_input:
+                        path_part, content = user_input.split("内容", 1)
+                    elif "\n" in user_input:
+                        path_part, content = user_input.split("\n", 1)
+                path_match = re.search(r"[A-Za-z]:\\[^\r\n]+", path_part)
+                if path_match:
+                    path = path_match.group(0).strip()
+                else:
+                    quoted = re.search(r"\"([^\"]+)\"|'([^']+)'", path_part)
+                    if quoted:
+                        path = quoted.group(1) or quoted.group(2)
+                    else:
+                        after = re.search(r"(?:文件|file)[:： ]*([^\r\n]+)", path_part, re.IGNORECASE)
+                        path = after.group(1).strip() if after else ""
+                action = "read"
+                if wants_file_write:
+                    action = "write"
+                elif wants_file_append:
+                    action = "append"
+                elif wants_file_create:
+                    action = "create"
+                if path:
+                    file_result = file_tool.execute(action=action, path=path.strip(), content=content.strip())
+                else:
+                    file_result = "【错误】未提供文件路径。"
+        if file_result is not None:
+            self.memory.add_message("assistant", str(file_result))
+            yield str(file_result)
+            return
         # [新增] 注入能力认知 (Context Injection)
         # 简化版：仅当系统提示里没写时才注入，或者直接移除如果 System Prompt 已经够强
         # 这里选择保留但极简
@@ -595,10 +671,22 @@ class EchoAgent:
                 context.append(behavior_msg)
 
         if clipboard_result is not None:
-            context.append({
-                "role": "system",
-                "content": f"【工具结果】{clipboard_result}\n请基于该结果继续自然对话，不要编造。"
-            })
+            clipboard_note = clipboard_result
+            if clipboard_result.startswith("【剪贴板内容读取成功】"):
+                parts = clipboard_result.split("\n", 1)
+                clipboard_note = parts[1] if len(parts) > 1 else ""
+            label = "【剪贴板真实内容】" if wants_clipboard_read else "【剪贴板操作结果】"
+            if context and context[-1]["role"] == "user":
+                context[-1]["content"] = f"{context[-1]['content']}\n\n{label}{clipboard_note}"
+            else:
+                context.append({"role": "user", "content": f"{label}{clipboard_note}"})
+
+        if file_result is not None:
+            label = "【文件读取结果】" if wants_file_read else "【文件操作结果】"
+            if context and context[-1]["role"] == "user":
+                context[-1]["content"] = f"{context[-1]['content']}\n\n{label}{file_result}"
+            else:
+                context.append({"role": "user", "content": f"{label}{file_result}"})
 
         # [新增] 短期逻辑强化 (Context Reinforcement)
         reinforcement_content = (
@@ -653,6 +741,8 @@ class EchoAgent:
         if any(k in user_input for k in tool_keywords) or any(k in user_input.lower() for k in tool_keywords):
             should_try_tool_call = True
         if clipboard_result is not None:
+            should_try_tool_call = False
+        if file_result is not None:
             should_try_tool_call = False
 
         try:

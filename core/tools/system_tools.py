@@ -1,6 +1,7 @@
 from core.tools.base import BaseTool
 from config import config
 import os
+import stat
 import subprocess
 
 class ProjectHistoryTool(BaseTool):
@@ -141,3 +142,154 @@ class ClipboardTool(BaseTool):
                 return f"【错误】不支持的操作类型：{action}。请使用 'read' 或 'write'。"
         except Exception as e:
             return f"【剪贴板操作失败】错误信息：{str(e)}"
+
+class FileTool(BaseTool):
+    def __init__(self):
+        self.workspace_root = os.path.abspath(r"D:\develop\Echo\_echo_workspace")
+        description = (
+            "【文本文件读写工具】\n"
+            f"仅允许在工作区内读写：{self.workspace_root}\n"
+            "操作：read/write/append/create。read 读取文本；write 覆盖写入；append 追加写入；create 创建空文件。"
+        )
+        super().__init__("File", description)
+
+    def to_dict(self):
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "description": "read/write/append/create"},
+                        "path": {"type": "string", "description": "File path, absolute or relative to workspace"},
+                        "content": {"type": "string", "description": "Text content for write/append"}
+                    },
+                    "required": ["action", "path"]
+                }
+            }
+        }
+
+    def _resolve_path(self, path: str) -> str:
+        if not path:
+            raise ValueError("缺少文件路径")
+        cleaned = path.strip().strip('"').strip("'")
+        if not os.path.isabs(cleaned):
+            cleaned = os.path.join(self.workspace_root, cleaned)
+        full_path = os.path.abspath(cleaned)
+        if not os.path.isdir(self.workspace_root):
+            raise ValueError(f"工作区不存在：{self.workspace_root}")
+        if os.path.commonpath([full_path, self.workspace_root]) != self.workspace_root:
+            raise ValueError("路径不在允许的工作区内")
+        return full_path
+
+    def _ensure_writable(self, target_path: str):
+        try:
+            os.chmod(self.workspace_root, stat.S_IWRITE | stat.S_IREAD | stat.S_IEXEC)
+        except Exception:
+            pass
+        if os.path.exists(target_path):
+            try:
+                os.chmod(target_path, stat.S_IWRITE | stat.S_IREAD)
+            except Exception:
+                pass
+        parent = os.path.dirname(target_path)
+        if parent and os.path.isdir(parent):
+            try:
+                os.chmod(parent, stat.S_IWRITE | stat.S_IREAD | stat.S_IEXEC)
+            except Exception:
+                pass
+
+    def _fallback_path(self, target_path: str) -> str:
+        fallback_dir = os.path.join(self.workspace_root, "_echo")
+        try:
+            os.makedirs(fallback_dir, exist_ok=True)
+            os.chmod(fallback_dir, stat.S_IWRITE | stat.S_IREAD | stat.S_IEXEC)
+            return os.path.join(fallback_dir, os.path.basename(target_path))
+        except Exception:
+            secondary_root = os.path.join(os.getcwd(), "_echo_workspace")
+            try:
+                os.makedirs(secondary_root, exist_ok=True)
+                os.chmod(secondary_root, stat.S_IWRITE | stat.S_IREAD | stat.S_IEXEC)
+            except Exception:
+                pass
+            return os.path.join(secondary_root, os.path.basename(target_path))
+
+    def execute(self, action: str = "read", path: str = "", content: str = "", **kwargs):
+        try:
+            target_path = self._resolve_path(path)
+            def _try_write_write(path_to_use: str, data: str, mode: str):
+                try:
+                    with open(path_to_use, mode, encoding="utf-8") as f:
+                        f.write(data)
+                    return None
+                except PermissionError:
+                    fb = self._fallback_path(path_to_use)
+                    try:
+                        os.makedirs(os.path.dirname(fb), exist_ok=True)
+                        with open(fb, mode, encoding="utf-8") as f:
+                            f.write(data)
+                        return ("fallback", fb)
+                    except Exception as e2:
+                        return ("error", f"原路径：{path_to_use}，回退路径：{fb}，错误：{str(e2)}")
+                except Exception as e:
+                    return ("error", str(e))
+            if action == "read":
+                if not os.path.exists(target_path):
+                    return f"【错误】文件不存在：{target_path}"
+                with open(target_path, "r", encoding="utf-8") as f:
+                    text = f.read()
+                if not text:
+                    return f"【文件读取成功】{target_path}\n【内容为空】"
+                preview = text[:2000] + ("..." if len(text) > 2000 else "")
+                return f"【文件读取成功】{target_path}\n{preview}"
+            if action == "write":
+                parent = os.path.dirname(target_path)
+                if parent and not os.path.isdir(parent):
+                    os.makedirs(parent, exist_ok=True)
+                self._ensure_writable(target_path)
+                result = _try_write_write(target_path, content or "", "w")
+                if result is None:
+                    return f"【文件写入成功】{target_path}"
+                if isinstance(result, tuple) and result[0] == "fallback":
+                    label = "【文件写入成功（回退 _echo）】"
+                    if "_echo_workspace" in result[1]:
+                        label = "【文件写入成功（回退 _echo_workspace）】"
+                    return f"{label}{result[1]}"
+                return f"【权限不足】{result[1]}"
+            if action == "append":
+                parent = os.path.dirname(target_path)
+                if parent and not os.path.isdir(parent):
+                    os.makedirs(parent, exist_ok=True)
+                self._ensure_writable(target_path)
+                result = _try_write_write(target_path, content or "", "a")
+                if result is None:
+                    return f"【文件追加成功】{target_path}"
+                if isinstance(result, tuple) and result[0] == "fallback":
+                    label = "【文件追加成功（回退 _echo）】"
+                    if "_echo_workspace" in result[1]:
+                        label = "【文件追加成功（回退 _echo_workspace）】"
+                    return f"{label}{result[1]}"
+                return f"【权限不足】{result[1]}"
+            if action == "create":
+                parent = os.path.dirname(target_path)
+                if parent and not os.path.isdir(parent):
+                    os.makedirs(parent, exist_ok=True)
+                if os.path.exists(target_path):
+                    return f"【文件已存在】{target_path}"
+                self._ensure_writable(target_path)
+                result = _try_write_write(target_path, "", "w")
+                if result is None:
+                    return f"【文件创建成功】{target_path}"
+                if isinstance(result, tuple) and result[0] == "fallback":
+                    label = "【文件创建成功（回退 _echo）】"
+                    if "_echo_workspace" in result[1]:
+                        label = "【文件创建成功（回退 _echo_workspace）】"
+                    return f"{label}{result[1]}"
+                return f"【权限不足】{result[1]}"
+            return f"【错误】不支持的操作类型：{action}。请使用 read/write/append/create。"
+        except PermissionError as e:
+            return f"【权限不足】{str(e)}"
+        except Exception as e:
+            return f"【文件操作失败】错误信息：{str(e)}"
