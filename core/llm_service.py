@@ -75,35 +75,6 @@ class LLMService:
              return
 
         try:
-            # [Fix] 显式定义工具集，避免 LLM 不知道有工具可用
-            # 这里我们假设 messages 里没有 tool_choice，如果需要强制调用工具，需要在外层处理
-            # 但对于 chat_stream，我们希望它既能聊天也能调用工具
-            # 目前 EchoAgent 并没有把 tools 传递给 chat_stream，这是问题所在！
-            
-            # 临时方案：如果 messages 里包含了 tool 相关的信息（目前没有），或者我们希望它自动调用工具
-            # 但这里 chat_stream 是纯文本生成。
-            # 要支持 Tool Call，我们需要：
-            # 1. 传递 tools 定义给 LLM
-            # 2. 处理 LLM 返回的 tool_calls
-            # 3. 执行工具
-            # 4. 把结果喂回 LLM
-            
-            # 目前 Echo 的架构是：
-            # User -> Agent.chat -> Agent._build_context -> LLM.chat_stream
-            # Agent 本身并没有实现 ReAct 循环或 Function Calling 循环。
-            # 这就是为什么它会“编造”结果 —— 它根本没去调工具！
-            
-            # 修复计划：
-            # 1. 修改 chat_stream 签名，允许传入 tools
-            # 2. 在 Agent.chat 里，先进行一轮非流式的 Tool Call 检查
-            # 3. 如果有 Tool Call，执行之，把结果加入 context，再进行最终的流式生成
-            
-            # 但为了最小化改动，我们先只修改 Agent.chat 逻辑，让它支持 Function Calling。
-            # 而 llm_service.chat_completion 已经支持了吗？没有。
-            
-            # 我们先给 LLMService 加一个 chat_completion_with_tools 方法
-            pass 
-
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=messages,

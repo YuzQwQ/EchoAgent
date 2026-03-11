@@ -29,6 +29,10 @@ build/
 # Streamlit
 .streamlit/secrets.toml
 
+# Tool Workspace
+_echo_workspace/
+test.txt
+
 # Project Data (Privacy)
 conversation.json
 *.log

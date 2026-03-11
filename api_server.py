@@ -28,32 +28,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 挂载前端静态文件 (实现 HTTP 托管)
-# 注意：必须先定义具体的 API 路由，最后再挂载 "/"，否则静态文件路由会拦截所有请求
-# 为了避免 WebSocket 被拦截，我们把静态文件挂载到 "/ui" 或者确保它不覆盖 WebSocket 路由
-# FastAPI 的 mount 顺序很重要。
-
-# 方案：将静态文件挂载调整到文件末尾，或者使用具体路径
-# 由于我们需要访问根路径 "/"，所以必须小心。
-# WebSocket 路由 "/ws/chat" 应该在 mount "/" 之前定义吗？
-# 不，FastAPI 的路由匹配是按顺序的，但 mount "/" 作为一个 catch-all 可能会有问题。
-
-# 修正：将 mount 移动到文件最底部，或者确保 WebSocket 路由先被注册。
-# 但在这里，WebSocket 路由是在 @app.websocket 装饰器中定义的，通常会在启动时注册。
-# 关键问题是：StaticFiles 中间件可能会拦截 WebSocket 握手请求 (因为它只处理 http scope)。
-
-# 解决方法：不要挂载到根路径 "/"，或者自定义 StaticFiles 来忽略 WebSocket。
-# 或者，最简单的：把 WebSocket 路由定义移到 mount 之前？(Python 代码执行顺序)
-# 实际上 @app.websocket 只是注册路由，真正的请求处理顺序取决于 Starlette 的路由表顺序。
-# 显式挂载 "/" 会匹配所有路径。
-
-# 最佳实践：
-# 1. 先定义 API 和 WebSocket 路由。
-# 2. 最后挂载静态文件到 "/"。
-
-# 我们先把这里的 mount 代码删掉，移动到文件末尾。
-pass
-
 # 初始化 Agent 和 TTS
 agent = EchoAgent()
 tts_service = TTSService()
@@ -588,9 +562,6 @@ async def websocket_endpoint(websocket: WebSocket):
                                         # 放入队列，生产者不等待
                                         await tts_queue.put((chunk_id, clean_sentence))
                                         chunk_id += 1
-                                else:
-                                    # 还没到阈值，继续攒着
-                                    pass
 
                         await asyncio.sleep(0.01)
                     
@@ -630,9 +601,6 @@ async def websocket_endpoint(websocket: WebSocket):
         print("WebSocket disconnected")
     except Exception as e:
         print(f"WebSocket error: {e}")
-    finally:
-        # 确保取消后台任务 (双重保险)
-        pass
 
 # TTS 消费者 Worker
 async def tts_worker(websocket: WebSocket, queue: asyncio.Queue, service: TTSService):
@@ -665,24 +633,13 @@ async def tts_worker(websocket: WebSocket, queue: asyncio.Queue, service: TTSSer
                     "content": "语音生成失败，请检查 TTS 服务连接"
                 })
             except Exception:
-                pass # 如果 websocket 断了就不管了
+                return
         finally:
             queue.task_done()
                     
 @app.get("/health")
 def health_check():
     return {"status": "ok", "model": config.PRIMARY_MODEL_NAME}
-
-# [关键修正] 必须在所有 API 路由定义完成后，最后挂载静态文件到根路径
-# 否则静态文件中间件会拦截掉 WebSocket 握手请求，导致 404/500 错误
-# 另外，FastAPI 的 StaticFiles 默认行为会接管所有以 mount path 开头的请求
-# 即使我们定义了 @app.websocket("/ws/chat")，如果 "/" 被 mount 了，且 StaticFiles 优先级高（其实取决于定义顺序）
-# 但在 FastAPI 中，mount 是子应用，通常不应该拦截已定义的路由？
-# 实际上，如果 mount 到了 "/"，它就是一个 catch-all。
-# 所以，我们应该：
-# 1. 确保所有 API 和 WebSocket 路由都在 mount 之前定义（已满足）
-# 2. 或者，不要 mount 到 "/"，而是 mount 到 "/ui"，然后在 "/" 做一个 redirect。
-# 为了稳妥，我们采用 redirect 方案。
 
 try:
     app.mount("/ui", StaticFiles(directory="desktop-app", html=True), name="static")
