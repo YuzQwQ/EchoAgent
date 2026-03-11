@@ -3,6 +3,7 @@ import os
 import time
 import threading
 import atexit
+import copy
 from typing import List, Dict, Any
 from config import config, load_system_prompt
 
@@ -12,7 +13,7 @@ class MemoryManager:
         self._cache_data = None
         self._dirty = False
         self._write_counter = 0
-        self._last_flush = 0.0
+        self._last_flush = time.time()
         self._flush_every = 5
         self._flush_interval = 2.0
         self._lock = threading.Lock()
@@ -106,15 +107,36 @@ class MemoryManager:
         with self._lock:
             if self._cache_data is None:
                 self._cache_data = self._load_from_disk()
-            return self._cache_data
+            return copy.deepcopy(self._cache_data)
 
-    def save_data(self, data: Dict[str, Any]):
+    def save_data(self, data: Dict[str, Any], force: bool = False):
         """保存完整数据"""
         with self._lock:
             self._cache_data = data
             self._dirty = True
             self._write_counter += 1
-            self._maybe_flush()
+            if force:
+                self._write_to_disk(self._cache_data)
+                self._dirty = False
+                self._write_counter = 0
+                self._last_flush = time.time()
+            else:
+                self._maybe_flush()
+
+    def _mutate_data(self, fn, force: bool = False):
+        with self._lock:
+            if self._cache_data is None:
+                self._cache_data = self._load_from_disk()
+            fn(self._cache_data)
+            self._dirty = True
+            self._write_counter += 1
+            if force:
+                self._write_to_disk(self._cache_data)
+                self._dirty = False
+                self._write_counter = 0
+                self._last_flush = time.time()
+            else:
+                self._maybe_flush()
 
     def load_history(self) -> List[Dict[str, str]]:
         """获取消息列表（兼容旧接口）"""
@@ -128,15 +150,15 @@ class MemoryManager:
 
     def update_summary(self, new_summary: str):
         """更新摘要"""
-        data = self.load_data()
-        data["summary"] = new_summary
-        self.save_data(data)
+        def mutate(data):
+            data["summary"] = new_summary
+        self._mutate_data(mutate, force=True)
 
     def add_message(self, role: str, content: str):
         """添加一条新消息"""
-        data = self.load_data()
-        data["messages"].append({"role": role, "content": content})
-        self.save_data(data)
+        def mutate(data):
+            data["messages"].append({"role": role, "content": content})
+        self._mutate_data(mutate)
 
     def add_behavior_fragment(self, fragment: Dict[str, str], max_items: int = 20):
         self.add_l1_fragment(fragment, max_items=max_items)
@@ -145,67 +167,72 @@ class MemoryManager:
         return self.get_l1()
 
     def add_l0_observation(self, observation: Dict[str, Any], max_items: int = 60):
-        data = self.load_data()
-        layer = data["memory_layers"]["L0_observe"]
-        layer.append(observation)
-        if len(layer) > max_items:
-            layer[:] = layer[-max_items:]
-        self.save_data(data)
+        def mutate(data):
+            layer = data["memory_layers"]["L0_observe"]
+            layer.append(observation)
+            if len(layer) > max_items:
+                layer[:] = layer[-max_items:]
+        self._mutate_data(mutate)
 
     def get_l0(self) -> List[Dict[str, Any]]:
         data = self.load_data()
         return data["memory_layers"]["L0_observe"]
 
     def pop_l0_tail(self, count: int) -> List[Dict[str, Any]]:
-        data = self.load_data()
-        layer = data["memory_layers"]["L0_observe"]
         if count <= 0:
             return []
-        removed = layer[-count:] if len(layer) >= count else layer[:]
-        data["memory_layers"]["L0_observe"] = layer[:-count] if len(layer) > count else []
-        self.save_data(data)
+        removed = []
+        def mutate(data):
+            nonlocal removed
+            layer = data["memory_layers"]["L0_observe"]
+            removed = layer[-count:] if len(layer) >= count else layer[:]
+            data["memory_layers"]["L0_observe"] = layer[:-count] if len(layer) > count else []
+        self._mutate_data(mutate)
         return removed
 
     def add_l1_fragment(self, fragment: Dict[str, Any], max_items: int = 20):
-        data = self.load_data()
-        layer = data["memory_layers"]["L1_behavior"]
-        layer.append(fragment)
-        if len(layer) > max_items:
-            layer[:] = layer[-max_items:]
-        data["behavior_fragments"] = layer
-        self.save_data(data)
+        def mutate(data):
+            layer = data["memory_layers"]["L1_behavior"]
+            layer.append(fragment)
+            if len(layer) > max_items:
+                layer[:] = layer[-max_items:]
+            data["behavior_fragments"] = layer
+        self._mutate_data(mutate)
 
     def get_l1(self) -> List[Dict[str, Any]]:
         data = self.load_data()
         return data["memory_layers"]["L1_behavior"]
 
     def add_l2_event(self, event: Dict[str, Any], max_items: int = 50):
-        data = self.load_data()
-        layer = data["memory_layers"]["L2_context"]
-        layer.append(event)
-        if len(layer) > max_items:
-            layer[:] = layer[-max_items:]
-        self.save_data(data)
+        def mutate(data):
+            layer = data["memory_layers"]["L2_context"]
+            layer.append(event)
+            if len(layer) > max_items:
+                layer[:] = layer[-max_items:]
+        self._mutate_data(mutate)
 
     def get_l2(self) -> List[Dict[str, Any]]:
         data = self.load_data()
         return data["memory_layers"]["L2_context"]
 
     def increment_turn(self) -> int:
-        data = self.load_data()
-        data["memory_meta"]["turn"] = data["memory_meta"].get("turn", 0) + 1
-        self.save_data(data)
-        return data["memory_meta"]["turn"]
+        current_turn = 0
+        def mutate(data):
+            nonlocal current_turn
+            data["memory_meta"]["turn"] = data["memory_meta"].get("turn", 0) + 1
+            current_turn = data["memory_meta"]["turn"]
+        self._mutate_data(mutate)
+        return current_turn
 
     def get_turn(self) -> int:
         data = self.load_data()
         return data["memory_meta"].get("turn", 0)
 
     def update_cooldown(self, ref_id: str, turn: int):
-        data = self.load_data()
-        data["memory_meta"]["cooldown"]["last_ref_id"] = ref_id
-        data["memory_meta"]["cooldown"]["last_ref_turn"] = turn
-        self.save_data(data)
+        def mutate(data):
+            data["memory_meta"]["cooldown"]["last_ref_id"] = ref_id
+            data["memory_meta"]["cooldown"]["last_ref_turn"] = turn
+        self._mutate_data(mutate)
 
     def get_cooldown(self) -> Dict[str, Any]:
         data = self.load_data()
@@ -213,13 +240,15 @@ class MemoryManager:
 
     def pop_oldest_messages(self, count: int = 1) -> List[Dict[str, str]]:
         """移除并返回最早的几条消息（用于摘要）"""
-        data = self.load_data()
-        if len(data["messages"]) < count:
-            return []
-        
-        removed = data["messages"][:count]
-        data["messages"] = data["messages"][count:]
-        self.save_data(data)
+        removed = []
+        def mutate(data):
+            nonlocal removed
+            if len(data["messages"]) < count:
+                removed = []
+                return
+            removed = data["messages"][:count]
+            data["messages"] = data["messages"][count:]
+        self._mutate_data(mutate)
         return removed
 
     def get_context(self) -> List[Dict[str, str]]:
@@ -248,4 +277,4 @@ class MemoryManager:
 
     def clear_history(self):
         """清空所有历史和摘要"""
-        self.save_data(self._default_data())
+        self.save_data(self._default_data(), force=True)

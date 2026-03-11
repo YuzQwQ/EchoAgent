@@ -56,27 +56,6 @@ class EchoAgent:
         将观察到的事件添加到短期记忆 (Context) 中，但不触发回复。
         这让 Echo 拥有“上帝视角”，知道用户刚才干了什么。
         """
-        # 使用 MemoryCapabilityTool 或直接操作 memory
-        # 这里为了简单，直接作为一条 System Message 或 User Info 插入
-        # 但我们不想让它变成 "User said: ...", 而是 "System noticed: ..."
-        
-        # 我们可以把它包装成一条特殊的 System Message，或者 append 到 chat history
-        # 但为了不污染对话历史，最好放在 System Prompt 的 dynamic context 里
-        # 目前最简单的方法是作为一条 "Hidden User Message" 插入，但标记为已处理
-        
-        # 更好的方案：
-        # 在下一次用户说话时，把这个观察结果作为 Context 附带进去。
-        # 这里我们先存到一个临时的 buffer 里
-        
-        # 暂时利用 memory 模块的 add_short_term_memory (如果存在)
-        # 或者直接存入 self.memory
-        
-        # [Hack] 既然我们已经有了 Context Reinforcement 机制，
-        # 我们可以把这个观察结果存入 self.memory 的一个特殊字段
-        # 下次 _build_context 时取出来。
-        
-        # 这里简单打印，实际需要 MemoryManager 支持 short_term_observation
-        # 假设 MemoryManager 有这个接口 (如果没有，我们需要加，或者暂时不存)
         entry = {
             "id": self._make_id("l0"),
             "time": datetime.now().strftime("%Y-%m-%d %H:%M"),
@@ -209,20 +188,13 @@ class EchoAgent:
         if not allow:
             return None
         
-        # [Perceptual Context Logic]
-        # 1. 优先检查是否存在“感知上下文” (即最近的观察记录)
-        # 无论是否 token 匹配，只要记录够新，就作为事实前提
         perceptual_context = ""
         l0_items = self.memory.get_l0()
         if l0_items and allow_l0:
             latest_obs = l0_items[-1] # 取最新一条
             obs_time_str = latest_obs.get("time", "")
-            
             # 检查时效性 (假设 time 格式为 "%Y-%m-%d %H:%M:%S" 或 "%Y-%m-%d %H:%M")
             # 这里简单起见，只要是最新一条且非空，就认为是有效的 Perceptual Context
-            # 实际上应该解析时间并计算差值 (例如 < 60s)
-            # 但由于 memory.get_turn() 不精确对应时间，我们假设 L0 的最新一条就是刚刚发生的
-            
             desc = latest_obs.get("description", "")
             if desc and "IGNORE" not in desc: # 排除被标记为忽略的
                 perceptual_context = f"【系统实时感知 (Perceptual Context)】\nEcho 刚刚观察到的现实世界状态（具有最高事实优先级）：\n- 时间: {obs_time_str}\n- 画面内容: {desc}\n"
@@ -304,12 +276,11 @@ class EchoAgent:
         # 1. 替换幻觉标签
         text = re.sub(r'\[edge:\w+\]', '[emotion:idle]', text)
         
-        # 2. 移除泄露的 XML 标签 (只是为了保险，正常逻辑应该已经切分掉了)
         text = text.replace('<response>', '').replace('</response>', '')
         
         return text
 
-    def _process_stream_response(self, context) -> Generator[str, None, str]:
+    def _process_stream_response(self, context, trace_id: Optional[str] = None) -> Generator[str, None, str]:
         """
         处理流式响应，支持 <thought> 标签过滤
         返回最终的 clean response
@@ -321,7 +292,7 @@ class EchoAgent:
         has_started_response = False
 
         try:
-            for chunk in self.llm.chat_stream(context):
+            for chunk in self.llm.chat_stream(context, trace_id=trace_id):
                 full_raw_response += chunk
                 buffer += chunk
                 
@@ -342,9 +313,6 @@ class EchoAgent:
                     has_started_response = True
                     buffer = post_response # 剩余 buffer 是 response 内容
                 
-                # [新增] 容错：如果检测到 </thought> 结束但没检测到 <response>
-                # 我们不再强制进入 response 模式，而是退出 thought 模式，让后续逻辑（检测 <response> 或 Fallback）自然处理
-                # 这样可以避免 "eager consumption" 导致的 <response> 标签泄露问题
                 elif "</thought>" in buffer and not has_started_response:
                      pre_thought, post_thought = buffer.split("</thought>", 1)
                      
@@ -393,15 +361,12 @@ class EchoAgent:
                                      # 标签未闭合，继续积攒
                                      pass
                                  else:
-                                     # 没标签，或者标签已处理完（不应该，因为 handled in split? no）
                                      # 这里处理：buffer = "Hello world"
                                      cleaned = self._clean_content(buffer)
                                      # [Fix] 去除开头的空白字符
                                      if not final_clean_response:
                                          cleaned = cleaned.lstrip()
                                          if not cleaned: # 如果全是空白，等待更多内容
-                                             # 注意：这里 buffer 不能清空，因为可能只是半个换行符？不，buffer 肯定是完整的字符
-                                             # 但如果是 \n，lstrip 后为空。我们应该清空 buffer 吗？
                                              # 是的，因为这个字符被消耗（丢弃）了。
                                              buffer = ""
                                              continue
@@ -534,6 +499,11 @@ class EchoAgent:
         处理用户输入，生成回复，并管理记忆
         包含：RAG、Context构建、Tool Call、流式生成
         """
+        import uuid
+        import time
+        trace_id = uuid.uuid4().hex[:8]
+        start_time = time.monotonic()
+        print(f"[trace:{trace_id}] chat_start")
         # 1. 保存用户输入到记忆
         self.memory.add_message("user", user_input)
         self.memory.increment_turn()
@@ -722,10 +692,12 @@ class EchoAgent:
                 else:
                     context.append(rag_msg)
 
-        self._run_tool_calls(context, user_input, clipboard_result, file_result)
+        tool_info = self._run_tool_calls(context, user_input, clipboard_result, file_result)
+        if tool_info:
+            print(f"[trace:{trace_id}] tool_check rule={tool_info.get('rule')} llm={tool_info.get('llm')} tool_calls={tool_info.get('tool_calls')}")
 
         # 4. 调用 LLM 生成回复 (使用 process_stream_response 处理 Hidden CoT)
-        final_response = yield from self._process_stream_response(context)
+        final_response = yield from self._process_stream_response(context, trace_id=trace_id)
 
         # 5. 保存 Echo 的回复到记忆
         if final_response:
@@ -733,6 +705,8 @@ class EchoAgent:
             
             # 6. 异步触发滚动摘要
             self._run_async_summary()
+        elapsed_ms = int((time.monotonic() - start_time) * 1000)
+        print(f"[trace:{trace_id}] chat_end elapsed_ms={elapsed_ms} response_chars={len(final_response or '')}")
 
     def process_observer_image(self, image_bytes: bytes, mime_type: str, observer_state, current_time: float, game_context: Optional[Dict[str, Any]] = None) -> Generator[str, None, None]:
         """
@@ -954,26 +928,15 @@ class EchoAgent:
         检查历史记录长度，如果超长，则触发摘要压缩
         """
         history = self.memory.load_history()
-        # 阈值：保留最近 MAX_HISTORY_ROUNDS 轮（*2 条消息）
-        # 如果超过阈值 + 2（至少多出一轮），就开始压缩最早的一轮
         max_msgs = config.MAX_HISTORY_ROUNDS * 2
         
         if len(history) > max_msgs:
-            # 取出最早的一轮对话（通常是 User + Assistant）
-            # 注意：pop_oldest_messages 会直接从 memory 中移除它们
-            # 所以我们要确保摘要生成成功后再保存，或者接受短暂的数据风险
-            # 这里简单起见，先 pop 出来，再生成摘要
-            
-            # 我们一次性压缩多一点，避免频繁触发？
-            # 还是每次只压缩 2 条？为了平滑，每次压缩 2 条比较稳
             old_messages = self.memory.pop_oldest_messages(2)
             if not old_messages:
                 return
 
             current_summary = self.memory.get_summary()
             
-            # 构造摘要 Prompt
-            # 这是一个后台任务，不需要太复杂的 System Prompt，只要指令清晰
             summary_prompt = [
                 {"role": "system", "content": "你是一个对话摘要助手。你的任务是将新的对话内容合并到现有的摘要中。保留关键事实、用户偏好和当前状态。忽略寒暄和废话。"},
                 {"role": "user", "content": f"""
@@ -1005,9 +968,6 @@ class EchoAgent:
                     
             except Exception as e:
                 print(f"Summary generation failed: {e}")
-                # 如果失败，消息已经 pop 掉了，这部分记忆丢失。
-                # 生产环境应该先 peek 再 pop，或者有回滚机制。
-                # MVP 阶段暂且接受。
 
     def proactive_chat(self) -> Generator[str, None, None]:
         """
@@ -1032,7 +992,9 @@ class EchoAgent:
 
         full_response = ""
         try:
-            for chunk in self._process_stream_response(context):
+            import uuid
+            trace_id = uuid.uuid4().hex[:8]
+            for chunk in self._process_stream_response(context, trace_id=trace_id):
                 full_response += chunk
             
             clean_response = full_response.strip()
@@ -1053,10 +1015,41 @@ class EchoAgent:
             print(f"Proactive chat error: {e}")
             return
 
+    def _should_call_tool_by_llm(self, user_input: str, tools_schema):
+        judge_prompt = [
+            {"role": "system", "content": "你是工具调用裁决器，只回答 YES 或 NO。"},
+            {"role": "user", "content": f"用户输入：{user_input}\n如果需要调用任何工具来获取事实信息或执行操作，回答 YES，否则回答 NO。"}
+        ]
+        try:
+            response = self.llm.chat_completion(judge_prompt)
+            return "YES" in (response or "").upper()
+        except Exception as e:
+            print(f"Tool judge failed: {e}")
+            return False
+
+    def _parse_tool_arguments(self, raw_arguments: str):
+        if raw_arguments is None:
+            return None, "Tool arguments missing"
+        try:
+            import json
+            return json.loads(raw_arguments), None
+        except Exception:
+            pass
+        cleaned = raw_arguments.strip()
+        if cleaned.startswith("```"):
+            cleaned = cleaned.strip("`").strip()
+        if cleaned.startswith("json"):
+            cleaned = cleaned[4:].strip()
+        try:
+            import json
+            return json.loads(cleaned), None
+        except Exception as e:
+            return None, f"Invalid tool arguments: {str(e)}"
+
     def _run_tool_calls(self, context, user_input: str, clipboard_result, file_result):
         tools_schema = [t.to_dict() for t in self.tools.get_all_tools()]
         if not tools_schema:
-            return
+            return None
         should_try_tool_call = False
         tool_keywords = [
             "剪贴板", "clipboard", "时间", "几点", "日期", "今天", "现在",
@@ -1068,11 +1061,14 @@ class EchoAgent:
             should_try_tool_call = False
         if file_result is not None:
             should_try_tool_call = False
-        if not should_try_tool_call:
-            return
+        llm_judged = self._should_call_tool_by_llm(user_input, tools_schema)
+        if not should_try_tool_call and not llm_judged:
+            return {"rule": False, "llm": False, "tool_calls": 0}
         try:
             tool_call_result = self.llm.chat_completion_with_tools(context, tools=tools_schema)
+            tool_calls_count = 0
             if tool_call_result and getattr(tool_call_result, 'tool_calls', None):
+                tool_calls_count = len(tool_call_result.tool_calls)
                 if hasattr(tool_call_result, 'model_dump'):
                     context.append(tool_call_result.model_dump())
                 elif hasattr(tool_call_result, 'to_dict'):
@@ -1085,21 +1081,35 @@ class EchoAgent:
                     call_id = tool_call.id
                     tool_instance = self.tools.get_tool(function_name)
                     if tool_instance:
-                        try:
-                            import json
-                            kwargs = json.loads(arguments)
-                            result = tool_instance.execute(**kwargs)
-                        except Exception as e:
-                            result = f"Error executing {function_name}: {str(e)}"
+                        kwargs, arg_error = self._parse_tool_arguments(arguments)
+                        if kwargs is None:
+                            result = {
+                                "tool": function_name,
+                                "ok": False,
+                                "error": arg_error or "Invalid tool arguments"
+                            }
+                        else:
+                            try:
+                                result = tool_instance.execute(**kwargs)
+                            except Exception as e:
+                                result = f"Error executing {function_name}: {str(e)}"
                     else:
                         result = f"Error: Tool {function_name} not found."
+                    import json
+                    tool_payload = {
+                        "tool": function_name,
+                        "ok": not (isinstance(result, str) and result.startswith("Error")),
+                        "data": result
+                    }
                     context.append({
                         "role": "tool",
                         "tool_call_id": call_id,
-                        "content": str(result)
+                        "content": json.dumps(tool_payload, ensure_ascii=False)
                     })
+            return {"rule": should_try_tool_call, "llm": llm_judged, "tool_calls": tool_calls_count}
         except Exception as e:
             print(f"Tool call check failed: {e}")
+            return {"rule": should_try_tool_call, "llm": llm_judged, "tool_calls": 0}
     
     def get_history(self):
         return self.memory.load_history()

@@ -5,8 +5,6 @@ from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_excep
 
 class LLMService:
     def __init__(self):
-        # 初始化 OpenAI 客户端
-        # 如果没有设置 API Key，这里可能会报错，但在 MVP 中我们允许启动时报错或者在调用时处理
         self.client = OpenAI(
             api_key=config.LLM_API_KEY,
             base_url=config.LLM_BASE_URL
@@ -60,7 +58,7 @@ class LLMService:
         retry=retry_if_exception_type((APIError, ConnectionError)),
         reraise=True
     )
-    def chat_stream(self, messages: List[Dict[str, str]]) -> Generator[str, None, None]:
+    def chat_stream(self, messages: List[Dict[str, str]], trace_id: Optional[str] = None) -> Generator[str, None, None]:
         """
         流式调用 LLM 生成回复
         
@@ -75,6 +73,10 @@ class LLMService:
              return
 
         try:
+            import time
+            start = time.monotonic()
+            if trace_id:
+                print(f"[trace:{trace_id}] llm_stream_start model={self.model} messages={len(messages)}")
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=messages,
@@ -84,8 +86,11 @@ class LLMService:
             for chunk in response:
                 if chunk.choices[0].delta.content is not None:
                     yield chunk.choices[0].delta.content
+            if trace_id:
+                elapsed_ms = int((time.monotonic() - start) * 1000)
+                print(f"[trace:{trace_id}] llm_stream_end elapsed_ms={elapsed_ms}")
 
         except Exception as e:
-            # 这里可以记录日志
-            # print(f"LLM API Error: {e}")
+            if trace_id:
+                print(f"[trace:{trace_id}] llm_stream_error error={str(e)}")
             raise e

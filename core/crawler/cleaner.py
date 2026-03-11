@@ -81,7 +81,6 @@ class HTMLCleaner:
 
         # 5. 提取正文
         # 简单策略：获取 body 文本，去除多余空白
-        # 进阶策略应该使用 readability-lxml，这里为了少依赖用 BS4
         text = soup.get_text(separator='\n')
         
         # 清洗空白行

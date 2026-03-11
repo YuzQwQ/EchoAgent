@@ -57,7 +57,6 @@ class ObserverState:
         """
         更新 Soft Context，积累观察状态
         这里简单实现：更新时间戳和计数
-        未来可以做更复杂的语义聚合（判断是否还在做同一件事）
         """
         # 简单的活性衰减检查
         if current_time - self.soft_context["last_update"] > 600: # 10分钟无更新，重置
@@ -68,7 +67,6 @@ class ObserverState:
         self.soft_context["last_update"] = current_time
         self.soft_context["observation_count"] += 1
         
-        # 简单覆盖 Activity (未来可以用 LLM 总结)
         if not self.soft_context["current_activity"]:
             self.soft_context["current_activity"] = description
             self.soft_context["since"] = current_time
@@ -329,8 +327,6 @@ async def websocket_endpoint(websocket: WebSocket):
                             allow_l0 = True # 允许访问短期观察记录
                             
                         else:
-                            # 即使不说话，如果不是 IGNORE，也应该把这个信息存入 Agent 的短期记忆（Context）
-                            # 这样用户下次说话时，Echo 知道刚才发生了什么
                             if category != "IGNORE":
                                 # 存入 L0，作为 Perceptual Context 的来源
                                 agent.add_observation_to_context(description)
@@ -420,18 +416,11 @@ async def websocket_endpoint(websocket: WebSocket):
                         # 观察模式：静默分析，决定是否说话
                         current_time = asyncio.get_running_loop().time()
                         
-                        # 获取游戏上下文 (Game Context)
-                        # 前端如果选择了泰拉瑞亚模式，会传 {"name": "Terraria"}
-                        # 如果没有传，默认是 General
                         game_context = message_data.get("game_context", {"name": "General"})
                         
                         # 1. 调用 Vision Service 分析 (Mode=observer)
                         # 注意：我们这里不进行前置冷却检查，而是先分析，再决策
                         # 这样可以保证 Soft Context 一直被更新
-                        
-                        # [Legacy] 这里的代码是旧的 observer 逻辑，已经被上面的 auto_observe 逻辑覆盖了
-                        # 前端现在的实现是发送 type='auto_observe' 而不是 type='image' mode='observer'
-                        # 但为了兼容性，我们把这里的逻辑也对齐一下
                         
                         if not change_detector.should_trigger(image_bytes, time.time()):
                             continue

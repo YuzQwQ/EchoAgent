@@ -53,7 +53,6 @@ class CrawlerManager:
             logger.info("Page skipped due to duplication.")
             return {"success": True, "status": "skipped_duplicate", "title": title}
             
-        # 4. Save (这里简单存为 JSON，后续可以接 RAG)
         result_data = {
             "url": final_url,
             "title": title,
