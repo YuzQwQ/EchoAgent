@@ -266,9 +266,39 @@
                 <option value="terraria">泰拉瑞亚 (Terraria)</option>
             </select>
         </div>
+        <details style="margin-bottom: 15px;">
+            <summary style="cursor: pointer; color: #333; font-weight: 600;">模型 API 配置（便于分发试用）</summary>
+            <div style="margin-top: 10px; display: grid; gap: 10px;">
+                <div>
+                    <label style="display: block; margin-bottom: 4px; color: #555;">Chat API Key</label>
+                    <input type="password" id="primary-api-key-input" placeholder="sk-..." style="width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 6px;">
+                </div>
+                <div>
+                    <label style="display: block; margin-bottom: 4px; color: #555;">Chat Base URL</label>
+                    <input type="text" id="primary-base-url-input" placeholder="https://api.openai.com/v1" style="width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 6px;">
+                </div>
+                <div>
+                    <label style="display: block; margin-bottom: 4px; color: #555;">Chat Model</label>
+                    <input type="text" id="primary-model-input" placeholder="gpt-4o-mini" style="width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 6px;">
+                </div>
+                <div>
+                    <label style="display: block; margin-bottom: 4px; color: #555;">Vision API Key</label>
+                    <input type="password" id="vision-api-key-input" placeholder="vision-key" style="width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 6px;">
+                </div>
+                <div>
+                    <label style="display: block; margin-bottom: 4px; color: #555;">Vision Base URL</label>
+                    <input type="text" id="vision-base-url-input" placeholder="https://api.siliconflow.cn/v1" style="width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 6px;">
+                </div>
+                <div>
+                    <label style="display: block; margin-bottom: 4px; color: #555;">Vision Model</label>
+                    <input type="text" id="vision-model-input" placeholder="qwen-vl-max" style="width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 6px;">
+                </div>
+                <div id="runtime-config-status" style="font-size: 12px; color: #666;"></div>
+            </div>
+        </details>
         <div style="display: flex; justify-content: flex-end; gap: 10px;">
             <button id="cancel-settings-btn" style="padding: 6px 12px; border: none; background: #eee; border-radius: 6px; cursor: pointer;">取消</button>
-            <button id="save-settings-btn" style="padding: 6px 12px; border: none; background: #007bff; color: white; border-radius: 6px; cursor: pointer;">保存并重启</button>
+            <button id="save-settings-btn" style="padding: 6px 12px; border: none; background: #007bff; color: white; border-radius: 6px; cursor: pointer;">保存并应用</button>
         </div>
     </div>
 
@@ -294,6 +324,13 @@
     const settingsModal = document.getElementById('settings-modal');
     const serverIpInput = document.getElementById('server-ip-input');
     const observerModeSelect = document.getElementById('observer-mode-select');
+    const primaryApiKeyInput = document.getElementById('primary-api-key-input');
+    const primaryBaseUrlInput = document.getElementById('primary-base-url-input');
+    const primaryModelInput = document.getElementById('primary-model-input');
+    const visionApiKeyInput = document.getElementById('vision-api-key-input');
+    const visionBaseUrlInput = document.getElementById('vision-base-url-input');
+    const visionModelInput = document.getElementById('vision-model-input');
+    const runtimeConfigStatus = document.getElementById('runtime-config-status');
     const saveSettingsBtn = document.getElementById('save-settings-btn');
     const cancelSettingsBtn = document.getElementById('cancel-settings-btn');
     const miniInput = document.getElementById('mini-input');
@@ -308,6 +345,7 @@
     }
     let serverIp = localStorage.getItem('server_ip') || defaultAddress;
     let observerMode = localStorage.getItem('observer_mode') || 'general';
+    const runtimeConfigStorageKey = 'runtime_model_config';
     function normalizeServerAddress(value) {
         const raw = (value || '').trim();
         if (!raw) {
@@ -333,11 +371,86 @@
         }
         return { host: host || '127.0.0.1', port };
     }
+
+    function getRuntimeConfigFromStorage() {
+        try {
+            const raw = localStorage.getItem(runtimeConfigStorageKey);
+            return raw ? JSON.parse(raw) : {};
+        } catch (e) {
+            console.warn('Invalid runtime config in localStorage', e);
+            return {};
+        }
+    }
+
+    function saveRuntimeConfigToStorage(config) {
+        localStorage.setItem(runtimeConfigStorageKey, JSON.stringify(config || {}));
+    }
+
+    async function applyRuntimeConfig(serverAddress, runtimeConfig) {
+        const { host, port } = normalizeServerAddress(serverAddress);
+        const httpProtocol = location.protocol === 'https:' ? 'https' : 'http';
+        const url = `${httpProtocol}://${host}:${port}/runtime-config`;
+        const payload = {};
+        const mappings = [
+            ['primary_api_key', runtimeConfig.primary_api_key],
+            ['primary_base_url', runtimeConfig.primary_base_url],
+            ['primary_model_name', runtimeConfig.primary_model_name],
+            ['vision_api_key', runtimeConfig.vision_api_key],
+            ['vision_base_url', runtimeConfig.vision_base_url],
+            ['vision_model_name', runtimeConfig.vision_model_name]
+        ];
+        for (const [key, value] of mappings) {
+            const cleaned = (value || '').trim();
+            if (cleaned) {
+                payload[key] = cleaned;
+            }
+        }
+
+        if (Object.keys(payload).length === 0) {
+            return { skipped: true };
+        }
+
+        const response = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+
+        if (!response.ok) {
+            throw new Error(`配置下发失败: HTTP ${response.status}`);
+        }
+        return await response.json();
+    }
+
+    function fillRuntimeConfigInputs() {
+        const cfg = getRuntimeConfigFromStorage();
+        primaryApiKeyInput.value = cfg.primary_api_key || '';
+        primaryBaseUrlInput.value = cfg.primary_base_url || '';
+        primaryModelInput.value = cfg.primary_model_name || '';
+        visionApiKeyInput.value = cfg.vision_api_key || '';
+        visionBaseUrlInput.value = cfg.vision_base_url || '';
+        visionModelInput.value = cfg.vision_model_name || '';
+    }
+
+    function collectRuntimeConfigFromInputs() {
+        return {
+            primary_api_key: primaryApiKeyInput.value,
+            primary_base_url: primaryBaseUrlInput.value,
+            primary_model_name: primaryModelInput.value,
+            vision_api_key: visionApiKeyInput.value,
+            vision_base_url: visionBaseUrlInput.value,
+            vision_model_name: visionModelInput.value
+        };
+    }
     
     // 设置按钮逻辑
     settingsBtn.addEventListener('click', () => {
         serverIpInput.value = serverIp;
         if (observerModeSelect) observerModeSelect.value = observerMode;
+        fillRuntimeConfigInputs();
+        if (runtimeConfigStatus) {
+            runtimeConfigStatus.textContent = '提示：模型配置仅保存在当前浏览器。';
+        }
         settingsModal.style.display = 'block';
     });
     
@@ -345,15 +458,36 @@
         settingsModal.style.display = 'none';
     });
     
-    saveSettingsBtn.addEventListener('click', () => {
+    saveSettingsBtn.addEventListener('click', async () => {
         const newIp = serverIpInput.value.trim();
         const newMode = observerModeSelect ? observerModeSelect.value : 'general';
+        const runtimeConfig = collectRuntimeConfigFromInputs();
         
         if (newIp) {
             localStorage.setItem('server_ip', newIp);
             localStorage.setItem('observer_mode', newMode);
+            saveRuntimeConfigToStorage(runtimeConfig);
             observerMode = newMode;
-            
+
+            if (runtimeConfigStatus) {
+                runtimeConfigStatus.textContent = '正在应用模型配置...';
+            }
+            try {
+                const applyResult = await applyRuntimeConfig(newIp, runtimeConfig);
+                if (runtimeConfigStatus) {
+                    if (applyResult?.skipped) {
+                        runtimeConfigStatus.textContent = '未填写模型参数，本次仅保存地址与模式。';
+                    } else {
+                        runtimeConfigStatus.textContent = '模型配置已下发到后端并生效。';
+                    }
+                }
+            } catch (err) {
+                console.warn(err);
+                if (runtimeConfigStatus) {
+                    runtimeConfigStatus.textContent = `模型配置下发失败：${err.message}`;
+                }
+            }
+
             alert('设置已保存。');
             settingsModal.style.display = 'none';
             
@@ -381,8 +515,18 @@
         }
     });
 
-    // 观察模式逻辑
-    const { ipcRenderer } = require('electron');
+    // 观察模式逻辑（兼容浏览器模式，无 electron 时降级）
+    let ipcRenderer = null;
+    try {
+        if (typeof require === 'function') {
+            const electron = require('electron');
+            ipcRenderer = electron && electron.ipcRenderer ? electron.ipcRenderer : null;
+        }
+    } catch (e) {
+        ipcRenderer = null;
+    }
+    const isElectronEnv = !!ipcRenderer;
+
     let isObserverActive = false;
     let observerTimer = null;
     let observerStream = null;
@@ -427,6 +571,10 @@
     const OBSERVER_SEND_QUALITY = 0.7;
 
     observerBtn.addEventListener('click', () => {
+        if (!isElectronEnv) {
+            showSubtitle('浏览器模式暂不支持观察模式，请使用桌面版。', 3000);
+            return;
+        }
         isObserverActive = !isObserverActive;
         if (isObserverActive) {
             observerBtn.classList.add('active');
@@ -688,6 +836,10 @@
     });
 
     function openMotionWindow() {
+        if (!isElectronEnv || !ipcRenderer) {
+            showSubtitle('浏览器模式暂不支持动作演示窗口。', 2000);
+            return;
+        }
         if (!live2dModel) return;
 
         // 获取动作数据
@@ -707,20 +859,23 @@
     }
 
     // 监听主进程发来的播放动作指令
-    ipcRenderer.on('play-motion', (event, { group, index, name }) => {
-        if (!live2dModel) return;
-        
-        console.log(`Playing motion from window: ${group} - ${index}`);
-        showSubtitle(`演示动作: ${group} / ${name}`, 2000);
-        
-        // 强制播放动作 (Priority 3 = FORCE)
-        live2dModel.internalModel.motionManager.startMotion(group, index, 3);
-    });
+    if (ipcRenderer) {
+        ipcRenderer.on('play-motion', (event, { group, index, name }) => {
+            if (!live2dModel) return;
+            
+            console.log(`Playing motion from window: ${group} - ${index}`);
+            showSubtitle(`演示动作: ${group} / ${name}`, 2000);
+            
+            // 强制播放动作 (Priority 3 = FORCE)
+            live2dModel.internalModel.motionManager.startMotion(group, index, 3);
+        });
+    }
 
     // [新增] 监听全局鼠标移动，实现全屏视线追踪
     // const debugCursor = document.getElementById('debug-cursor'); 
     
-    ipcRenderer.on('global-mouse-move', (event, { x, y, globalX, globalY }) => {
+    if (ipcRenderer) {
+        ipcRenderer.on('global-mouse-move', (event, { x, y, globalX, globalY }) => {
         // [Debug] 检查数据完整性
         if (globalX === undefined || globalY === undefined) {
              // console.warn("Received mouse event but missing global coordinates...");
@@ -760,7 +915,8 @@
                 console.error("Focus error:", e);
             }
         }
-    });
+        });
+    }
 
     // 4. 字幕/打字机效果相关
     const subtitleBar = document.getElementById('subtitle-bar');
@@ -1170,7 +1326,8 @@
     function connectWebSocket() {
         // 连接本地 FastAPI 服务
         const { host, port } = normalizeServerAddress(serverIp);
-        ws = new WebSocket(`ws://${host}:${port}/ws/chat`);
+        const wsProtocol = location.protocol === 'https:' ? 'wss' : 'ws';
+        ws = new WebSocket(`${wsProtocol}://${host}:${port}/ws/chat`);
         
         // 情感标签解析缓冲
         let textBuffer = "";
@@ -1638,8 +1795,20 @@
         }
     });
 
+    async function bootstrapRuntimeConfig() {
+        const savedConfig = getRuntimeConfigFromStorage();
+        const hasAnyConfig = Object.values(savedConfig).some(v => (v || '').trim());
+        if (!hasAnyConfig) return;
+        try {
+            await applyRuntimeConfig(serverIp, savedConfig);
+            console.log('Runtime model config applied from localStorage.');
+        } catch (err) {
+            console.warn('Runtime model config apply failed on startup:', err);
+        }
+    }
+
     // 启动连接
-    connectWebSocket();
+    bootstrapRuntimeConfig().finally(() => connectWebSocket());
 
 </script>
 </body>
