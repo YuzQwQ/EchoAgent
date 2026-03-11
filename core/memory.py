@@ -1,12 +1,23 @@
 import json
 import os
+import time
+import threading
+import atexit
 from typing import List, Dict, Any
 from config import config, load_system_prompt
 
 class MemoryManager:
     def __init__(self, file_path: str = config.HISTORY_FILE):
         self.file_path = file_path
+        self._cache_data = None
+        self._dirty = False
+        self._write_counter = 0
+        self._last_flush = 0.0
+        self._flush_every = 5
+        self._flush_interval = 2.0
+        self._lock = threading.Lock()
         self._ensure_file_exists()
+        atexit.register(self.flush)
 
     def _default_data(self) -> Dict[str, Any]:
         return {
@@ -32,49 +43,78 @@ class MemoryManager:
     def _ensure_file_exists(self):
         """确保存储文件存在"""
         if not os.path.exists(self.file_path):
-            self.save_data(self._default_data())
+            self._write_to_disk(self._default_data())
 
-    def load_data(self) -> Dict[str, Any]:
-        """加载完整数据（包含 summary 和 messages）"""
+    def _normalize_data(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        base = self._default_data()
+        if isinstance(data, list):
+            base["messages"] = data
+            return base
+        if "summary" not in data:
+            data["summary"] = ""
+        if "messages" not in data:
+            data["messages"] = []
+        if "behavior_fragments" not in data:
+            data["behavior_fragments"] = []
+        if "memory_layers" not in data:
+            data["memory_layers"] = base["memory_layers"]
+        if "memory_meta" not in data:
+            data["memory_meta"] = base["memory_meta"]
+        if "cooldown" not in data["memory_meta"]:
+            data["memory_meta"]["cooldown"] = base["memory_meta"]["cooldown"]
+        if "turn" not in data["memory_meta"]:
+            data["memory_meta"]["turn"] = 0
+        if data["behavior_fragments"] and not data["memory_layers"]["L1_behavior"]:
+            data["memory_layers"]["L1_behavior"] = data["behavior_fragments"]
+        return data
+
+    def _load_from_disk(self) -> Dict[str, Any]:
         try:
             with open(self.file_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-                
-                # 兼容旧版本：如果是 list，转换成 dict
-                if isinstance(data, list):
-                    base = self._default_data()
-                    base["messages"] = data
-                    return base
-                
-                # 确保字段存在
-                if "summary" not in data:
-                    data["summary"] = ""
-                if "messages" not in data:
-                    data["messages"] = []
-                if "behavior_fragments" not in data:
-                    data["behavior_fragments"] = []
-                if "memory_layers" not in data:
-                    data["memory_layers"] = self._default_data()["memory_layers"]
-                if "memory_meta" not in data:
-                    data["memory_meta"] = self._default_data()["memory_meta"]
-                if "cooldown" not in data["memory_meta"]:
-                    data["memory_meta"]["cooldown"] = self._default_data()["memory_meta"]["cooldown"]
-                if "turn" not in data["memory_meta"]:
-                    data["memory_meta"]["turn"] = 0
-                if data["behavior_fragments"] and not data["memory_layers"]["L1_behavior"]:
-                    data["memory_layers"]["L1_behavior"] = data["behavior_fragments"]
-                    
-                return data
+                return self._normalize_data(data)
         except (json.JSONDecodeError, FileNotFoundError):
             return self._default_data()
 
-    def save_data(self, data: Dict[str, Any]):
-        """保存完整数据"""
+    def _write_to_disk(self, data: Dict[str, Any]):
         try:
             with open(self.file_path, 'w', encoding='utf-8') as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
         except Exception as e:
             print(f"Error saving history: {e}")
+
+    def _maybe_flush(self):
+        if not self._dirty:
+            return
+        now = time.time()
+        if self._write_counter >= self._flush_every or (now - self._last_flush) >= self._flush_interval:
+            self._write_to_disk(self._cache_data)
+            self._dirty = False
+            self._write_counter = 0
+            self._last_flush = now
+
+    def flush(self):
+        with self._lock:
+            if self._dirty and self._cache_data is not None:
+                self._write_to_disk(self._cache_data)
+                self._dirty = False
+                self._write_counter = 0
+                self._last_flush = time.time()
+
+    def load_data(self) -> Dict[str, Any]:
+        """加载完整数据（包含 summary 和 messages）"""
+        with self._lock:
+            if self._cache_data is None:
+                self._cache_data = self._load_from_disk()
+            return self._cache_data
+
+    def save_data(self, data: Dict[str, Any]):
+        """保存完整数据"""
+        with self._lock:
+            self._cache_data = data
+            self._dirty = True
+            self._write_counter += 1
+            self._maybe_flush()
 
     def load_history(self) -> List[Dict[str, str]]:
         """获取消息列表（兼容旧接口）"""
