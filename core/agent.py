@@ -654,14 +654,6 @@ class EchoAgent:
             self.memory.add_message("assistant", str(file_result))
             yield str(file_result)
             return
-        # [新增] 注入能力认知 (Context Injection)
-        # 简化版：仅当系统提示里没写时才注入，或者直接移除如果 System Prompt 已经够强
-        # 这里选择保留但极简
-        # capabilities_prompt = self.tools.get_capabilities_prompt()
-        # if context and context[0]["role"] == "system":
-        #    context[0]["content"] += "\n" + capabilities_prompt
-        pass
-
         behavior_prompt = self._build_layered_memory_prompt(user_input, allow_behavior_memory, allow_l0=allow_l0)
         if behavior_prompt:
             behavior_msg = {"role": "system", "content": behavior_prompt}
@@ -730,67 +722,7 @@ class EchoAgent:
                 else:
                     context.append(rag_msg)
 
-        # 3. Tool Call Check (Function Calling)
-        tools_schema = [t.to_dict() for t in self.tools.get_all_tools()]
-
-        should_try_tool_call = False
-        tool_keywords = [
-            "剪贴板", "clipboard", "时间", "几点", "日期", "今天", "现在",
-            "项目历史", "最近更新", "更新记录"
-        ]
-        if any(k in user_input for k in tool_keywords) or any(k in user_input.lower() for k in tool_keywords):
-            should_try_tool_call = True
-        if clipboard_result is not None:
-            should_try_tool_call = False
-        if file_result is not None:
-            should_try_tool_call = False
-
-        try:
-            tool_call_result = None
-            if should_try_tool_call:
-                tool_call_result = self.llm.chat_completion_with_tools(context, tools=tools_schema)
-            
-            if tool_call_result and getattr(tool_call_result, 'tool_calls', None):
-                # LLM 想要调用工具
-                print(f"🔧 [Agent] LLM requested tool calls: {len(tool_call_result.tool_calls)}")
-                
-                # 将 LLM 的回复（包含 tool_calls）加入上下文
-                # 兼容性处理：转为 dict
-                if hasattr(tool_call_result, 'model_dump'):
-                    context.append(tool_call_result.model_dump())
-                elif hasattr(tool_call_result, 'to_dict'):
-                    context.append(tool_call_result.to_dict())
-                else:
-                    context.append(tool_call_result)
-                
-                for tool_call in tool_call_result.tool_calls:
-                    function_name = tool_call.function.name
-                    arguments = tool_call.function.arguments
-                    call_id = tool_call.id
-                    
-                    print(f"  -> Calling {function_name} with {arguments}")
-                    
-                    tool_instance = self.tools.get_tool(function_name)
-                    if tool_instance:
-                        try:
-                            import json
-                            kwargs = json.loads(arguments)
-                            result = tool_instance.execute(**kwargs)
-                        except Exception as e:
-                            result = f"Error executing {function_name}: {str(e)}"
-                    else:
-                        result = f"Error: Tool {function_name} not found."
-                    
-                    # 将工具执行结果加入上下文
-                    context.append({
-                        "role": "tool",
-                        "tool_call_id": call_id,
-                        "content": str(result)
-                    })
-                    print(f"  <- Result: {str(result)[:100]}...")
-        except Exception as e:
-            print(f"Tool call check failed: {e}")
-            # Continue to normal chat if tools fail
+        self._run_tool_calls(context, user_input, clipboard_result, file_result)
 
         # 4. 调用 LLM 生成回复 (使用 process_stream_response 处理 Hidden CoT)
         final_response = yield from self._process_stream_response(context)
@@ -1120,6 +1052,54 @@ class EchoAgent:
         except Exception as e:
             print(f"Proactive chat error: {e}")
             return
+
+    def _run_tool_calls(self, context, user_input: str, clipboard_result, file_result):
+        tools_schema = [t.to_dict() for t in self.tools.get_all_tools()]
+        if not tools_schema:
+            return
+        should_try_tool_call = False
+        tool_keywords = [
+            "剪贴板", "clipboard", "时间", "几点", "日期", "今天", "现在",
+            "项目历史", "最近更新", "更新记录"
+        ]
+        if any(k in user_input for k in tool_keywords) or any(k in user_input.lower() for k in tool_keywords):
+            should_try_tool_call = True
+        if clipboard_result is not None:
+            should_try_tool_call = False
+        if file_result is not None:
+            should_try_tool_call = False
+        if not should_try_tool_call:
+            return
+        try:
+            tool_call_result = self.llm.chat_completion_with_tools(context, tools=tools_schema)
+            if tool_call_result and getattr(tool_call_result, 'tool_calls', None):
+                if hasattr(tool_call_result, 'model_dump'):
+                    context.append(tool_call_result.model_dump())
+                elif hasattr(tool_call_result, 'to_dict'):
+                    context.append(tool_call_result.to_dict())
+                else:
+                    context.append(tool_call_result)
+                for tool_call in tool_call_result.tool_calls:
+                    function_name = tool_call.function.name
+                    arguments = tool_call.function.arguments
+                    call_id = tool_call.id
+                    tool_instance = self.tools.get_tool(function_name)
+                    if tool_instance:
+                        try:
+                            import json
+                            kwargs = json.loads(arguments)
+                            result = tool_instance.execute(**kwargs)
+                        except Exception as e:
+                            result = f"Error executing {function_name}: {str(e)}"
+                    else:
+                        result = f"Error: Tool {function_name} not found."
+                    context.append({
+                        "role": "tool",
+                        "tool_call_id": call_id,
+                        "content": str(result)
+                    })
+        except Exception as e:
+            print(f"Tool call check failed: {e}")
     
     def get_history(self):
         return self.memory.load_history()
