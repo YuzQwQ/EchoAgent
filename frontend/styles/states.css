@@ -1,0 +1,42 @@
+.chip-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: rgba(255,255,255,0.4);
+    box-shadow: 0 0 0 0 rgba(255,255,255,0.25);
+    transition: background 0.2s ease;
+}
+
+.chip-dot.online {
+    background: var(--success);
+    box-shadow: 0 0 0 6px rgba(143, 240, 200, 0.08);
+}
+
+#subtitle-bar.hide {
+    opacity: 0;
+    transform: translateX(-50%) translateY(16px);
+    pointer-events: none;
+}
+
+#input-overlay.show {
+    display: flex;
+    animation: float-in 0.18s ease;
+}
+
+body:hover #control-panel,
+#control-panel:focus-within,
+#input-overlay.show + #control-panel {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+}
+
+.icon-btn.active {
+    color: #ffffff;
+    background: linear-gradient(135deg, rgba(138,180,255,0.34), rgba(199,166,255,0.28));
+    border-color: rgba(138,180,255,0.45);
+    box-shadow: 0 12px 28px rgba(90, 125, 255, 0.25);
+}
+
+#observer-btn.active {
+    animation: breathe 1.9s infinite ease-in-out;
+}

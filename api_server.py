@@ -708,7 +708,7 @@ def update_runtime_config(update: RuntimeConfigUpdate):
     }
 
 try:
-    app.mount("/ui", StaticFiles(directory="desktop-app", html=True), name="static")
+    app.mount("/ui", StaticFiles(directory="frontend", html=True), name="static")
 except Exception as e:
     print(f"Warning: Failed to mount frontend static files: {e}")
 

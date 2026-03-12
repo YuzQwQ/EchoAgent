@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline' 'unsafe-eval' https://cubism.live2d.com https://cdn.jsdelivr.net https://cdnjs.cloudflare.com ws: data: blob: filesystem:;">
+    <title>Echo Desktop</title>
+    <script src="assets/libs/pixi.min.js"></script>
+    <script src="assets/libs/live2dcubismcore.min.js"></script>
+    <script src="assets/libs/live2d.min.js"></script>
+    <script src="assets/libs/pixi-live2d-display.min.js"></script>
+    <script src="assets/libs/wav-recorder.js"></script>
+    <link rel="stylesheet" href="styles/base.css">
+    <link rel="stylesheet" href="styles/layout.css">
+    <link rel="stylesheet" href="styles/controls.css">
+    <link rel="stylesheet" href="styles/subtitle.css">
+    <link rel="stylesheet" href="styles/modal.css">
+    <link rel="stylesheet" href="styles/states.css">
+</head>
+<body>
+    <div id="drag-overlay"></div>
+
+    <div id="debug-cursor"></div>
+
+    <div id="live2d-container">
+        <canvas id="live2d-canvas"></canvas>
+    </div>
+
+    <div id="hud-layer">
+        <div id="status-chip">
+            <span class="chip-dot" id="status-dot"></span>
+            <span id="status-text">Echo 待连接</span>
+        </div>
+
+        <div id="subtitle-bar" class="hide">Echo 准备就绪...</div>
+
+        <div id="input-overlay">
+            <input type="text" id="mini-input" placeholder="和 Echo 聊聊...">
+            <button class="icon-btn" id="mini-send-btn" title="发送">➤</button>
+        </div>
+
+        <div id="control-panel">
+            <button class="icon-btn" id="toggle-input-btn" title="输入文字">⌨️</button>
+            <button class="icon-btn" id="mic-btn" title="按住说话">🎤</button>
+            <button class="icon-btn" id="observer-btn" title="观察模式 (Observer Mode)">👁️</button>
+            <button class="icon-btn" id="motion-btn" title="动作演示">🎬</button>
+            <button class="icon-btn" id="tts-btn" title="开启/关闭语音">🔇</button>
+            <button class="icon-btn" id="settings-btn" title="设置">⚙️</button>
+            <button class="icon-btn" id="close-btn" title="退出">✕</button>
+            <input type="file" id="image-upload" accept="image/*">
+            <button class="icon-btn" id="img-btn" title="发送图片">📷</button>
+        </div>
+    </div>
+
+    <div id="settings-modal" class="settings-modal" style="display: none;">
+        <h3 class="settings-title">设置</h3>
+        <div class="settings-section">
+            <div class="settings-field">
+                <label for="server-ip-input">后端地址 (Server IP)</label>
+                <input type="text" id="server-ip-input" class="settings-input" placeholder="127.0.0.1:18000">
+            </div>
+            <div class="settings-field">
+                <label for="observer-mode-select">观察模式 (Observer Mode)</label>
+                <select id="observer-mode-select" class="settings-select">
+                    <option value="general">通用模式 (General)</option>
+                    <option value="terraria">泰拉瑞亚 (Terraria)</option>
+                </select>
+            </div>
+        </div>
+        <details class="settings-details">
+            <summary class="settings-summary">模型 API 配置（便于分发试用）</summary>
+            <div class="settings-grid">
+                <div class="settings-field">
+                    <label for="primary-api-key-input">Chat API Key</label>
+                    <input type="password" id="primary-api-key-input" class="settings-input" placeholder="sk-...">
+                </div>
+                <div class="settings-field">
+                    <label for="primary-base-url-input">Chat Base URL</label>
+                    <input type="text" id="primary-base-url-input" class="settings-input" placeholder="https://api.openai.com/v1">
+                </div>
+                <div class="settings-field">
+                    <label for="primary-model-input">Chat Model</label>
+                    <input type="text" id="primary-model-input" class="settings-input" placeholder="gpt-4o-mini">
+                </div>
+                <div class="settings-field">
+                    <label for="vision-api-key-input">Vision API Key</label>
+                    <input type="password" id="vision-api-key-input" class="settings-input" placeholder="vision-key">
+                </div>
+                <div class="settings-field">
+                    <label for="vision-base-url-input">Vision Base URL</label>
+                    <input type="text" id="vision-base-url-input" class="settings-input" placeholder="https://api.siliconflow.cn/v1">
+                </div>
+                <div class="settings-field">
+                    <label for="vision-model-input">Vision Model</label>
+                    <input type="text" id="vision-model-input" class="settings-input" placeholder="qwen-vl-max">
+                </div>
+                <div id="runtime-config-status" class="settings-hint"></div>
+            </div>
+        </details>
+        <div class="settings-actions">
+            <button id="cancel-settings-btn" class="settings-btn secondary">取消</button>
+            <button id="save-settings-btn" class="settings-btn primary">保存并应用</button>
+        </div>
+    </div>
+
+    <div id="chat-section">
+        <div id="chat-container"></div>
+        <div id="input-area">
+            <textarea id="message-input"></textarea>
+            <button id="send-btn"></button>
+        </div>
+    </div>
+
+    <script src="js/config/storage.js"></script>
+    <script src="js/state/app-state.js"></script>
+    <script src="js/ui/dom.js"></script>
+    <script src="js/config/runtime-config.js"></script>
+    <script src="js/ui/status-chip.js"></script>
+    <script src="js/ui/subtitle.js"></script>
+    <script src="js/platform/electron-bridge.js"></script>
+    <script src="js/observer/capture.js"></script>
+    <script src="js/observer/analyzer.js"></script>
+    <script src="js/observer/observer-controller.js"></script>
+    <script src="js/audio/recorder.js"></script>
+    <script src="js/network/websocket.js"></script>
+    <script src="js/ui/controls.js"></script>
+    <script src="js/live2d/motions.js"></script>
+    <script src="js/live2d/focus-tracking.js"></script>
+    <script src="js/live2d/model.js"></script>
+    <script src="js/audio/lip-sync.js"></script>
+    <script src="js/audio/player.js"></script>
+    <script src="js/config/runtime-bootstrap.js"></script>
+    <script src="js/platform/electron-motion.js"></script>
+    <script src="js/main.js"></script>
+</body>
+</html>

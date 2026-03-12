@@ -1,0 +1,52 @@
+#subtitle-bar {
+    position: absolute;
+    left: 50%;
+    bottom: 82px;
+    transform: translateX(-50%) translateY(14px);
+    width: min(92vw, 500px);
+    min-height: 56px;
+    padding: 16px 20px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    line-height: 1.55;
+    font-size: 18px;
+    font-weight: 600;
+    color: #f8fbff;
+    letter-spacing: 0.2px;
+    border-radius: 22px;
+    background: linear-gradient(180deg, rgba(17, 24, 43, 0.78), rgba(12, 18, 33, 0.62));
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    box-shadow: 0 18px 50px rgba(4, 8, 18, 0.36);
+    backdrop-filter: none;
+    -webkit-app-region: no-drag;
+    pointer-events: auto;
+    opacity: 0;
+    transition: opacity 0.28s ease, transform 0.28s ease;
+    text-shadow: 0 1px 10px rgba(0, 0, 0, 0.28);
+}
+
+#subtitle-bar::before {
+    content: "";
+    position: absolute;
+    inset: 1px;
+    border-radius: 21px;
+    background: linear-gradient(135deg, rgba(255,255,255,0.08), transparent 35%, rgba(138,180,255,0.07));
+    pointer-events: none;
+}
+
+#subtitle-bar.show {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+}
+
+@media (max-width: 560px) {
+    #subtitle-bar {
+        bottom: 78px;
+        width: min(94vw, 94vw);
+        padding: 14px 16px;
+        font-size: 16px;
+        border-radius: 18px;
+    }
+}
