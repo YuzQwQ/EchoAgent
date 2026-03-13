@@ -8,7 +8,7 @@
             const hasAnyConfig = typeof hasRuntimeConfig === 'function' ? hasRuntimeConfig(savedConfig) : false;
             if (hasAnyConfig && typeof applyRuntimeConfig === 'function') {
                 await applyRuntimeConfig(getServerAddress ? getServerAddress() : '', savedConfig);
-                console.log('Runtime model config applied from localStorage.');
+                console.log('Runtime model config applied from browser storage.');
             }
         } catch (err) {
             console.warn('Runtime model config apply failed on startup:', err);

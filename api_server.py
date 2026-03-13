@@ -1,4 +1,4 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -8,6 +8,7 @@ from core.tts_service import TTSService
 from core.vision_service import VisionService
 from core.llm_service import LLMService
 from config import config
+from openai import OpenAI
 import uvicorn
 import asyncio
 import json
@@ -22,10 +23,43 @@ import time
 
 app = FastAPI(title="Echo API Service")
 
-# 允许跨域
+def _get_allowed_origins():
+    raw = os.getenv("ECHO_CORS_ORIGINS") or os.getenv("CORS_ALLOW_ORIGINS")
+    if raw:
+        return [item.strip() for item in raw.split(",") if item.strip()]
+    return [
+        "http://127.0.0.1:18000",
+        "http://localhost:18000",
+        "null"
+    ]
+
+ADMIN_TOKEN = os.getenv("ECHO_ADMIN_TOKEN") or os.getenv("ADMIN_TOKEN")
+
+def _is_loopback(request: Request) -> bool:
+    if not request.client:
+        return False
+    host = request.client.host or ""
+    return host in ("127.0.0.1", "localhost", "::1") or host.startswith("127.")
+
+def _require_read_access(request: Request, token: str | None):
+    if ADMIN_TOKEN:
+        if token != ADMIN_TOKEN:
+            raise HTTPException(status_code=403, detail="Forbidden")
+        return
+    if not _is_loopback(request):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+def _require_write_access(request: Request, token: str | None):
+    if ADMIN_TOKEN:
+        if token != ADMIN_TOKEN:
+            raise HTTPException(status_code=403, detail="Forbidden")
+        return
+    if not _is_loopback(request):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_get_allowed_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -34,6 +68,25 @@ app.add_middleware(
 # 初始化 Agent 和 TTS
 agent = EchoAgent()
 tts_service = TTSService()
+
+def _transcribe_audio(audio_bytes: bytes) -> str:
+    provider = (config.STT_PROVIDER or "google").lower()
+    language = config.STT_LANGUAGE or "zh-CN"
+    if provider == "google":
+        r = sr.Recognizer()
+        with sr.AudioFile(io.BytesIO(audio_bytes)) as source:
+            audio = r.record(source)
+        return r.recognize_google(audio, language=language)
+    if provider in ("openai", "whisper"):
+        if not config.STT_API_KEY:
+            raise ValueError("Missing STT API Key")
+        client = OpenAI(api_key=config.STT_API_KEY, base_url=config.STT_BASE_URL)
+        result = client.audio.transcriptions.create(
+            model=config.STT_OPENAI_MODEL,
+            file=("audio.wav", audio_bytes, "audio/wav")
+        )
+        return result.text if hasattr(result, "text") else (result.get("text") if isinstance(result, dict) else "")
+    raise ValueError(f"Unsupported STT provider: {provider}")
 
 class ObserverState:
     """观察模式全局状态管理"""
@@ -401,18 +454,9 @@ async def websocket_endpoint(websocket: WebSocket):
                     else:
                         audio_bytes = base64.b64decode(audio_data_str)
                     
-                    # 2. 使用 SpeechRecognition 处理
-                    r = sr.Recognizer()
-                    # 这里的 BytesIO 必须包含完整的 WAV 文件数据（含头信息）
-                    with sr.AudioFile(io.BytesIO(audio_bytes)) as source:
-                        audio = r.record(source)
-                    
-                    # 3. 调用 Google STT (需联网)
                     print("Recognizing speech...")
-                    # show_all=False 返回最佳结果字符串
-                    # 使用 run_in_executor 避免阻塞事件循环
                     loop = asyncio.get_running_loop()
-                    text = await loop.run_in_executor(None, lambda: r.recognize_google(audio, language="zh-CN"))
+                    text = await loop.run_in_executor(None, lambda: _transcribe_audio(audio_bytes))
                     print(f"Recognized text: {text}")
                     
                     if text:
@@ -435,6 +479,10 @@ async def websocket_endpoint(websocket: WebSocket):
                 except sr.RequestError as e:
                     print(f"STT: RequestError {e}")
                     await websocket.send_json({"type": "error", "content": "语音服务连接失败，请检查网络"})
+                    continue
+                except ValueError as e:
+                    print(f"STT: ConfigError {e}")
+                    await websocket.send_json({"type": "error", "content": "语音服务未配置或不可用"})
                     continue
                 except Exception as e:
                     print(f"STT Error: {e}")
@@ -680,7 +728,8 @@ def health_check():
 
 
 @app.get("/runtime-config")
-def get_runtime_config_status():
+def get_runtime_config_status(request: Request, x_admin_token: str | None = Header(default=None, alias="X-Admin-Token")):
+    _require_read_access(request, x_admin_token)
     return {
         "primary": {
             "base_url": config.PRIMARY_BASE_URL,
@@ -696,7 +745,8 @@ def get_runtime_config_status():
 
 
 @app.post("/runtime-config")
-def update_runtime_config(update: RuntimeConfigUpdate):
+def update_runtime_config(update: RuntimeConfigUpdate, request: Request, x_admin_token: str | None = Header(default=None, alias="X-Admin-Token")):
+    _require_write_access(request, x_admin_token)
     changed = _apply_runtime_config(update)
     return {
         "ok": True,

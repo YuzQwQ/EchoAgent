@@ -76,10 +76,11 @@ class SystemSelfAwarenessTool(BaseTool):
     def __init__(self):
         # 动态获取当前配置
         model_name = config.PRIMARY_MODEL_NAME
+        base_url = config.PRIMARY_BASE_URL
         
         description = (
             "系统自省与状态感知模块。用于获取自身状态、版本历史和硬件配置。\n"
-            f"**核心身份更新**：你的底层模型已升级为 **{model_name}** (DeepSeek-V3/671B)，拥有顶尖的逻辑推理与代码能力。\n"
+            f"**核心身份**：当前对话模型为 **{model_name}**，服务地址：{base_url}。\n"
             "**感知能力升级**：\n"
             "1. **视觉形象**：你现在拥有 Live2D 虚拟形象，必须通过输出 `[emotion:xxx]` 标签（happy, sad, angry, surprised, shy）来控制表情动作。\n"
             "2. **语音系统**：集成了 Edge TTS，能够通过扬声器与用户直接对话。你的输出会被自动朗读，且系统会自动过滤标签。\n"
@@ -89,15 +90,15 @@ class SystemSelfAwarenessTool(BaseTool):
         super().__init__("SystemSelfAwareness", description)
 
     def execute(self, **kwargs):
-        return """
-        【系统升级日志 System Upgrade Log】
-        1. [Core] Model Upgraded to DeepSeek-V3 (671B). Logic capability significantly enhanced.
-        2. [Frontend] Live2D Interactive Avatar deployed. Supports real-time motion control via emotion tags.
-        3. [Audio] Edge TTS integrated with tag sanitization.
-        4. [Performance] Smart Safe Window mechanism implemented for zero-latency streaming.
-        5. [Security] Emoji output disabled to enforce Live2D visual consistency.
-        Status: All Systems Nominal. Ready for complex tasks.
-        """
+        return (
+            "【系统状态 System Status】\n"
+            f"1. [Core] Model: {config.PRIMARY_MODEL_NAME} ({config.PRIMARY_BASE_URL}).\n"
+            "2. [Frontend] Live2D Interactive Avatar enabled. Supports emotion tags.\n"
+            "3. [Audio] Edge TTS active with tag sanitization.\n"
+            "4. [Performance] Smart Safe Window streaming enabled.\n"
+            "5. [Security] Emoji output disabled to enforce Live2D visual consistency.\n"
+            "Status: All Systems Nominal."
+        )
 
 class GetCurrentTimeTool(BaseTool):
     def __init__(self):

@@ -55,8 +55,24 @@ class Config:
     GPT_SOVITS_URL = os.getenv("GPT_SOVITS_URL", "http://127.0.0.1:9880/tts")
 
     # Agent Config记忆设置
-    HISTORY_FILE = os.path.join(os.getcwd(), "conversation.json")
+    HISTORY_DIR = os.getenv("HISTORY_DIR", os.path.join(os.getcwd(), "history"))
+    HISTORY_SESSION_ID = os.getenv("HISTORY_SESSION_ID", os.getenv("ECHO_SESSION_ID", ""))
+    HISTORY_MAX_FILES = int(os.getenv("HISTORY_MAX_FILES", 20))
+    HISTORY_MAX_FILE_MB = int(os.getenv("HISTORY_MAX_FILE_MB", 8))
+    HISTORY_FILE = (
+        os.path.join(HISTORY_DIR, f"conversation_{HISTORY_SESSION_ID}.json")
+        if HISTORY_SESSION_ID
+        else os.path.join(os.getcwd(), "conversation.json")
+    )
     MAX_HISTORY_ROUNDS = int(os.getenv("MAX_HISTORY_ROUNDS", 10))
+
+    LLM_TIMEOUT_SECONDS = float(os.getenv("LLM_TIMEOUT_SECONDS", 30))
+
+    STT_PROVIDER = os.getenv("STT_PROVIDER", "google")
+    STT_LANGUAGE = os.getenv("STT_LANGUAGE", "zh-CN")
+    STT_API_KEY = os.getenv("STT_API_KEY", PRIMARY_API_KEY)
+    STT_BASE_URL = os.getenv("STT_BASE_URL", PRIMARY_BASE_URL)
+    STT_OPENAI_MODEL = os.getenv("STT_OPENAI_MODEL", "whisper-1")
     
     # 动态加载 System Prompt
     SYSTEM_PROMPT = load_system_prompt()

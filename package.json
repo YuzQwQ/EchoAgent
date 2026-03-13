@@ -1,15 +1,22 @@
 {
-  "name": "echo",
+  "name": "echo-agent-root",
   "version": "1.0.0",
-  "main": "index.js",
-  "directories": {
-    "test": "tests"
-  },
+  "description": "Echo Agent - Root Workspace",
+  "private": true,
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "frontend:install": "cd frontend && npm install",
+    "frontend:start": "cd frontend && npm start",
+    "frontend:build": "cd frontend && npm run dist",
+    "backend:install": "pip install -r requirements.txt",
+    "backend:start": "python api_server.py",
+    "start": "npm run frontend:start"
   },
-  "keywords": [],
+  "keywords": [
+    "echo",
+    "agent",
+    "desktop",
+    "ai"
+  ],
   "author": "",
-  "license": "ISC",
-  "description": ""
+  "license": "MIT"
 }

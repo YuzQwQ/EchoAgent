@@ -74,9 +74,14 @@
             return { skipped: true };
         }
 
+        const headers = { 'Content-Type': 'application/json' };
+        const adminToken = window.storage?.getAdminToken ? window.storage.getAdminToken() : '';
+        if (adminToken) {
+            headers['X-Admin-Token'] = adminToken;
+        }
         const response = await fetch(url, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers,
             body: JSON.stringify(payload)
         });
 

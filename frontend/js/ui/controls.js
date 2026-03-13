@@ -77,8 +77,14 @@
             dom.serverIpInput.value = appState.connection.serverIp;
             if (dom.observerModeSelect) dom.observerModeSelect.value = appState.observer.mode;
             runtimeConfig.fillInputs(dom, storage.getRuntimeConfig());
+            if (dom.rememberKeysCheckbox) {
+                dom.rememberKeysCheckbox.checked = storage.getRuntimeRemember();
+            }
+            if (dom.adminTokenInput) {
+                dom.adminTokenInput.value = storage.getAdminToken();
+            }
             if (dom.runtimeConfigStatus) {
-                dom.runtimeConfigStatus.textContent = '提示：模型配置仅保存在当前浏览器。';
+                dom.runtimeConfigStatus.textContent = '提示：密钥默认仅保存在当前会话，可选记住。';
             }
             dom.settingsModal.style.display = 'block';
         };
@@ -91,13 +97,16 @@
             const newIp = dom.serverIpInput.value.trim();
             const newMode = dom.observerModeSelect ? dom.observerModeSelect.value : 'general';
             const runtime = runtimeConfig.collectFromInputs(dom);
+            const rememberKeys = dom.rememberKeysCheckbox ? dom.rememberKeysCheckbox.checked : false;
+            const adminToken = dom.adminTokenInput ? dom.adminTokenInput.value : '';
 
             if (!newIp) return;
 
             const prevIp = appState.connection.serverIp;
             storage.setServerIp(newIp);
             storage.setObserverMode(newMode);
-            storage.setRuntimeConfig(runtime);
+            storage.setRuntimeConfig(runtime, rememberKeys);
+            storage.setAdminToken(adminToken);
             appState.connection.serverIp = newIp;
             appState.observer.mode = newMode;
 

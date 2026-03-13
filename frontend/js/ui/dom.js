@@ -24,6 +24,8 @@
         settingsModal: document.getElementById('settings-modal'),
         serverIpInput: document.getElementById('server-ip-input'),
         observerModeSelect: document.getElementById('observer-mode-select'),
+        rememberKeysCheckbox: document.getElementById('remember-keys-checkbox'),
+        adminTokenInput: document.getElementById('admin-token-input'),
         primaryApiKeyInput: document.getElementById('primary-api-key-input'),
         primaryBaseUrlInput: document.getElementById('primary-base-url-input'),
         primaryModelInput: document.getElementById('primary-model-input'),

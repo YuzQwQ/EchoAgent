@@ -10,6 +10,9 @@ from config import config, load_system_prompt
 class MemoryManager:
     def __init__(self, file_path: str = config.HISTORY_FILE):
         self.file_path = file_path
+        self._history_dir = os.path.dirname(self.file_path)
+        self._max_files = config.HISTORY_MAX_FILES
+        self._max_bytes = config.HISTORY_MAX_FILE_MB * 1024 * 1024
         self._cache_data = None
         self._dirty = False
         self._write_counter = 0
@@ -43,8 +46,12 @@ class MemoryManager:
 
     def _ensure_file_exists(self):
         """确保存储文件存在"""
+        if self._history_dir and not os.path.exists(self._history_dir):
+            os.makedirs(self._history_dir, exist_ok=True)
         if not os.path.exists(self.file_path):
-            self._write_to_disk(self._default_data())
+            self._write_to_disk(self._default_data(), allow_rotate=False)
+        else:
+            self._rotate_if_needed(self._load_from_disk())
 
     def _normalize_data(self, data: Dict[str, Any]) -> Dict[str, Any]:
         base = self._default_data()
@@ -77,12 +84,62 @@ class MemoryManager:
         except (json.JSONDecodeError, FileNotFoundError):
             return self._default_data()
 
-    def _write_to_disk(self, data: Dict[str, Any]):
+    def _write_to_disk(self, data: Dict[str, Any], allow_rotate: bool = True):
         try:
             with open(self.file_path, 'w', encoding='utf-8') as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
+            if allow_rotate:
+                self._rotate_if_needed(data)
         except Exception as e:
             print(f"Error saving history: {e}")
+
+    def _rotate_if_needed(self, data: Dict[str, Any]):
+        if self._max_bytes <= 0:
+            return
+        try:
+            if os.path.getsize(self.file_path) <= self._max_bytes:
+                return
+        except Exception:
+            return
+        self._archive_and_reset(data)
+
+    def _archive_and_reset(self, data: Dict[str, Any]):
+        base, ext = os.path.splitext(self.file_path)
+        suffix = ext if ext else ".json"
+        timestamp = time.strftime("%Y%m%d-%H%M%S")
+        archive_path = f"{base}.{timestamp}{suffix}"
+        try:
+            if os.path.exists(self.file_path):
+                os.replace(self.file_path, archive_path)
+        except Exception as e:
+            print(f"Error archiving history: {e}")
+        reduced = self._default_data()
+        reduced["summary"] = data.get("summary", "")
+        self._write_to_disk(reduced, allow_rotate=False)
+        self._cache_data = reduced
+        self._trim_archives()
+
+    def _trim_archives(self):
+        if self._max_files <= 0 or not self._history_dir or not os.path.isdir(self._history_dir):
+            return
+        base = os.path.basename(self.file_path)
+        prefix = os.path.splitext(base)[0] + "."
+        candidates = []
+        for name in os.listdir(self._history_dir):
+            if name == base:
+                continue
+            if name.startswith(prefix) and name.endswith(".json"):
+                full = os.path.join(self._history_dir, name)
+                try:
+                    candidates.append((os.path.getmtime(full), full))
+                except Exception:
+                    continue
+        candidates.sort(key=lambda item: item[0], reverse=True)
+        for _, path in candidates[self._max_files:]:
+            try:
+                os.remove(path)
+            except Exception:
+                continue
 
     def _maybe_flush(self):
         if not self._dirty:
