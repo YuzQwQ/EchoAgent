@@ -7,10 +7,10 @@
     max-height: 82vh;
     overflow: auto;
     padding: 22px;
-    border-radius: 24px;
+    border-radius: var(--panel-radius);
     background: linear-gradient(180deg, rgba(15, 22, 40, 0.94), rgba(10, 14, 28, 0.9));
-    border: 1px solid rgba(255,255,255,0.08);
-    box-shadow: 0 24px 60px rgba(0,0,0,0.42);
+    border: 1px solid var(--panel-border);
+    box-shadow: var(--panel-shadow);
     backdrop-filter: none;
     color: var(--text-main);
     z-index: 100;
@@ -51,8 +51,8 @@
 .settings-select {
     width: 100%;
     padding: 12px 14px;
-    border-radius: 14px;
-    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: var(--btn-radius);
+    border: 1px solid var(--btn-border);
     background: rgba(255,255,255,0.06);
     color: var(--text-main);
     font-size: 14px;
@@ -74,9 +74,9 @@
 .settings-details {
     margin-top: 14px;
     padding: 14px;
-    border-radius: 18px;
+    border-radius: var(--panel-radius);
     background: rgba(255,255,255,0.04);
-    border: 1px solid rgba(255,255,255,0.06);
+    border: 1px solid var(--panel-border);
 }
 
 .settings-summary {
@@ -103,7 +103,7 @@
 .settings-btn {
     min-width: 92px;
     padding: 10px 16px;
-    border-radius: 14px;
+    border-radius: var(--btn-radius);
     border: 1px solid transparent;
     font-size: 14px;
     font-weight: 600;
@@ -113,18 +113,19 @@
 
 .settings-btn:hover {
     transform: translateY(-1px);
+    box-shadow: var(--btn-shadow);
 }
 
 .settings-btn.secondary {
     color: var(--text-main);
     background: rgba(255,255,255,0.06);
-    border-color: rgba(255,255,255,0.08);
+    border-color: var(--btn-border);
 }
 
 .settings-btn.primary {
     color: white;
     background: linear-gradient(135deg, #6b95ff, #9f86ff);
-    box-shadow: 0 12px 28px rgba(107, 149, 255, 0.28);
+    box-shadow: var(--btn-shadow);
 }
 
 @media (max-width: 560px) {

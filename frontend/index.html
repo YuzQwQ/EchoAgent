@@ -5,11 +5,16 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline' 'unsafe-eval' https://cubism.live2d.com https://cdn.jsdelivr.net https://cdnjs.cloudflare.com ws: data: blob: filesystem:;">
     <title>Echo Desktop</title>
+
     <script src="assets/libs/pixi.min.js"></script>
     <script src="assets/libs/live2dcubismcore.min.js"></script>
     <script src="assets/libs/live2d.min.js"></script>
     <script src="assets/libs/pixi-live2d-display.min.js"></script>
     <script src="assets/libs/wav-recorder.js"></script>
+
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css">
+
     <link rel="stylesheet" href="styles/base.css">
     <link rel="stylesheet" href="styles/layout.css">
     <link rel="stylesheet" href="styles/controls.css">
@@ -17,99 +22,211 @@
     <link rel="stylesheet" href="styles/modal.css">
     <link rel="stylesheet" href="styles/states.css">
 </head>
-<body>
-    <div id="drag-overlay"></div>
+<body class="echo-app">
+    <div id="drag-overlay" aria-hidden="true"></div>
+    <div id="debug-cursor" aria-hidden="true"></div>
 
-    <div id="debug-cursor"></div>
+    <main id="app-shell" class="app-shell">
+        <!-- Live2D 主舞台 -->
+        <section id="stage-shell" class="stage-shell">
+            <div id="live2d-container" class="stage-canvas-wrap">
+                <canvas id="live2d-canvas"></canvas>
+            </div>
 
-    <div id="live2d-container">
-        <canvas id="live2d-canvas"></canvas>
-    </div>
+            <!-- 顶部状态层 -->
+            <header id="hud-layer" class="hud-layer">
 
-    <div id="hud-layer">
-        <div id="status-chip">
-            <span class="chip-dot" id="status-dot"></span>
-            <span id="status-text">Echo 待连接</span>
+                <!-- 字幕 -->
+                <div id="subtitle-bar" class="glass-card subtitle-bar hide">
+                    Echo 准备就绪...
+                </div>
+
+                <!-- 快捷输入 -->
+                <div id="input-overlay" class="glass-panel input-overlay input-group input-group-lg">
+                    <input
+                        type="text"
+                        id="mini-input"
+                        class="form-control"
+                        placeholder="和 Echo 聊聊..."
+                        autocomplete="off"
+                    >
+                    <button class="btn btn-primary" id="mini-send-btn" title="发送" aria-label="发送消息">
+                        <i class="bi bi-send"></i>
+                    </button>
+                </div>
+
+                <!-- 右下控制面板 -->
+                <nav id="control-panel" class="glass-panel control-panel" aria-label="快捷控制面板">
+                    <button class="icon-btn" id="toggle-input-btn" title="输入文字" aria-label="输入文字">
+                        <i class="bi bi-keyboard"></i>
+                    </button>
+                    <button class="icon-btn" id="mic-btn" title="按住说话" aria-label="语音输入">
+                        <i class="bi bi-mic"></i>
+                    </button>
+                    <button class="icon-btn" id="observer-btn" title="观察模式 (Observer Mode)" aria-label="观察模式">
+                        <i class="bi bi-eye"></i>
+                    </button>
+                    <button class="icon-btn" id="motion-btn" title="动作演示" aria-label="动作演示">
+                        <i class="bi bi-camera-reels"></i>
+                    </button>
+                    <button class="icon-btn" id="tts-btn" title="开启/关闭语音" aria-label="切换语音">
+                        <i class="bi bi-volume-mute"></i>
+                    </button>
+                    <button class="icon-btn" id="settings-btn" title="设置" aria-label="打开设置">
+                        <i class="bi bi-gear"></i>
+                    </button>
+                    <button class="icon-btn danger" id="close-btn" title="退出" aria-label="退出应用">
+                        <i class="bi bi-x-lg"></i>
+                    </button>
+
+                    <input type="file" id="image-upload" accept="image/*" hidden>
+                    <button class="icon-btn" id="img-btn" title="发送图片" aria-label="发送图片">
+                        <i class="bi bi-image"></i>
+                    </button>
+                </nav>
+            </header>
+        </section>
+
+        <!-- 侧边聊天区 -->
+        <aside id="chat-section" class="glass-panel chat-shell">
+            <div class="chat-header">
+                <div>
+                    <h2 class="chat-title mb-0">Echo</h2>
+                    <p class="chat-subtitle mb-0">Observer-first Desktop Agent</p>
+                </div>
+            </div>
+
+            <div id="chat-container" class="chat-container"></div>
+
+            <div id="input-area" class="chat-input-area input-group">
+                <textarea
+                    id="message-input"
+                    class="form-control"
+                    placeholder="输入消息..."
+                    rows="2"
+                ></textarea>
+                <button id="send-btn" class="btn btn-primary" aria-label="发送消息">
+                    <i class="bi bi-send"></i>
+                </button>
+            </div>
+        </aside>
+    </main>
+
+    <!-- 设置弹窗 -->
+    <div id="settings-backdrop" class="modal-backdrop-custom" style="display: none;"></div>
+
+    <section
+        id="settings-modal"
+        class="settings-modal glass-modal bg-dark text-white border border-secondary rounded-4 shadow-lg p-4"
+        style="display: none;"
+        aria-labelledby="settings-title"
+        aria-modal="true"
+        role="dialog"
+    >
+        <div class="settings-header d-flex align-items-center justify-content-between mb-4">
+            <div>
+                <h3 id="settings-title" class="settings-title mb-1">设置</h3>
+                <p class="text-secondary small mb-0">配置连接、观察模式与模型参数</p>
+            </div>
         </div>
 
-        <div id="subtitle-bar" class="hide">Echo 准备就绪...</div>
-
-        <div id="input-overlay">
-            <input type="text" id="mini-input" placeholder="和 Echo 聊聊...">
-            <button class="icon-btn" id="mini-send-btn" title="发送">➤</button>
-        </div>
-
-        <div id="control-panel">
-            <button class="icon-btn" id="toggle-input-btn" title="输入文字">⌨️</button>
-            <button class="icon-btn" id="mic-btn" title="按住说话">🎤</button>
-            <button class="icon-btn" id="observer-btn" title="观察模式 (Observer Mode)">👁️</button>
-            <button class="icon-btn" id="motion-btn" title="动作演示">🎬</button>
-            <button class="icon-btn" id="tts-btn" title="开启/关闭语音">🔇</button>
-            <button class="icon-btn" id="settings-btn" title="设置">⚙️</button>
-            <button class="icon-btn" id="close-btn" title="退出">✕</button>
-            <input type="file" id="image-upload" accept="image/*">
-            <button class="icon-btn" id="img-btn" title="发送图片">📷</button>
-        </div>
-    </div>
-
-    <div id="settings-modal" class="settings-modal" style="display: none;">
-        <h3 class="settings-title">设置</h3>
         <div class="settings-section">
             <div class="settings-field">
-                <label for="server-ip-input">后端地址 (Server IP)</label>
-                <input type="text" id="server-ip-input" class="settings-input" placeholder="127.0.0.1:18000">
+                <label for="server-ip-input" class="form-label">后端地址</label>
+                <input
+                    type="text"
+                    id="server-ip-input"
+                    class="settings-input form-control form-control-sm"
+                    placeholder="127.0.0.1:18000"
+                >
             </div>
+
             <div class="settings-field">
-                <label for="observer-mode-select">观察模式 (Observer Mode)</label>
-                <select id="observer-mode-select" class="settings-select">
+                <label for="observer-mode-select" class="form-label">观察模式</label>
+                <select id="observer-mode-select" class="settings-select form-select form-select-sm">
                     <option value="general">通用模式 (General)</option>
                     <option value="terraria">泰拉瑞亚 (Terraria)</option>
                 </select>
             </div>
         </div>
-        <details class="settings-details">
-            <summary class="settings-summary">模型 API 配置（便于分发试用）</summary>
-            <div class="settings-grid">
-                <div class="settings-field">
-                    <label for="primary-api-key-input">Chat API Key</label>
-                    <input type="password" id="primary-api-key-input" class="settings-input" placeholder="sk-...">
-                </div>
-                <div class="settings-field">
-                    <label for="primary-base-url-input">Chat Base URL</label>
-                    <input type="text" id="primary-base-url-input" class="settings-input" placeholder="https://api.openai.com/v1">
-                </div>
-                <div class="settings-field">
-                    <label for="primary-model-input">Chat Model</label>
-                    <input type="text" id="primary-model-input" class="settings-input" placeholder="gpt-4o-mini">
-                </div>
-                <div class="settings-field">
-                    <label for="vision-api-key-input">Vision API Key</label>
-                    <input type="password" id="vision-api-key-input" class="settings-input" placeholder="vision-key">
-                </div>
-                <div class="settings-field">
-                    <label for="vision-base-url-input">Vision Base URL</label>
-                    <input type="text" id="vision-base-url-input" class="settings-input" placeholder="https://api.siliconflow.cn/v1">
-                </div>
-                <div class="settings-field">
-                    <label for="vision-model-input">Vision Model</label>
-                    <input type="text" id="vision-model-input" class="settings-input" placeholder="qwen-vl-max">
-                </div>
-                <div id="runtime-config-status" class="settings-hint"></div>
-            </div>
-        </details>
-        <div class="settings-actions">
-            <button id="cancel-settings-btn" class="settings-btn secondary">取消</button>
-            <button id="save-settings-btn" class="settings-btn primary">保存并应用</button>
-        </div>
-    </div>
 
-    <div id="chat-section">
-        <div id="chat-container"></div>
-        <div id="input-area">
-            <textarea id="message-input"></textarea>
-            <button id="send-btn"></button>
+        <details class="settings-details mt-3">
+            <summary class="settings-summary">模型 API 配置（便于分发试用）</summary>
+
+            <div class="settings-grid mt-3">
+                <div class="settings-field">
+                    <label for="primary-api-key-input" class="form-label">Chat API Key</label>
+                    <input
+                        type="password"
+                        id="primary-api-key-input"
+                        class="settings-input form-control form-control-sm"
+                        placeholder="sk-..."
+                    >
+                </div>
+
+                <div class="settings-field">
+                    <label for="primary-base-url-input" class="form-label">Chat Base URL</label>
+                    <input
+                        type="text"
+                        id="primary-base-url-input"
+                        class="settings-input form-control form-control-sm"
+                        placeholder="https://api.openai.com/v1"
+                    >
+                </div>
+
+                <div class="settings-field">
+                    <label for="primary-model-input" class="form-label">Chat Model</label>
+                    <input
+                        type="text"
+                        id="primary-model-input"
+                        class="settings-input form-control form-control-sm"
+                        placeholder="gpt-4o-mini"
+                    >
+                </div>
+
+                <div class="settings-field">
+                    <label for="vision-api-key-input" class="form-label">Vision API Key</label>
+                    <input
+                        type="password"
+                        id="vision-api-key-input"
+                        class="settings-input form-control form-control-sm"
+                        placeholder="vision-key"
+                    >
+                </div>
+
+                <div class="settings-field">
+                    <label for="vision-base-url-input" class="form-label">Vision Base URL</label>
+                    <input
+                        type="text"
+                        id="vision-base-url-input"
+                        class="settings-input form-control form-control-sm"
+                        placeholder="https://api.siliconflow.cn/v1"
+                    >
+                </div>
+
+                <div class="settings-field">
+                    <label for="vision-model-input" class="form-label">Vision Model</label>
+                    <input
+                        type="text"
+                        id="vision-model-input"
+                        class="settings-input form-control form-control-sm"
+                        placeholder="qwen-vl-max"
+                    >
+                </div>
+            </div>
+
+            <div id="runtime-config-status" class="settings-hint form-text text-secondary mt-2"></div>
+        </details>
+
+        <div class="settings-actions d-flex justify-content-end gap-2 mt-4">
+            <button id="cancel-settings-btn" class="settings-btn secondary btn btn-outline-light btn-sm">
+                取消
+            </button>
+            <button id="save-settings-btn" class="settings-btn primary btn btn-primary btn-sm">
+                保存并应用
+            </button>
         </div>
-    </div>
+    </section>
 
     <script src="js/config/storage.js"></script>
     <script src="js/state/app-state.js"></script>
