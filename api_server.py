@@ -2,15 +2,18 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 from core.agent import EchoAgent
 from core.tts_service import TTSService
 from core.vision_service import VisionService
+from core.llm_service import LLMService
 from config import config
 import uvicorn
 import asyncio
 import json
 import base64
 import re
+import os
 import speech_recognition as sr
 import io
 import cv2
@@ -235,6 +238,51 @@ def sanitize_text_for_tts(text: str) -> str:
     return text
 
 vision_service = VisionService()
+
+
+class RuntimeConfigUpdate(BaseModel):
+    primary_api_key: str | None = None
+    primary_base_url: str | None = None
+    primary_model_name: str | None = None
+    vision_api_key: str | None = None
+    vision_base_url: str | None = None
+    vision_model_name: str | None = None
+
+
+def _apply_runtime_config(update: RuntimeConfigUpdate):
+    """应用运行时模型配置，并重建相关服务实例。"""
+    changed = []
+
+    def set_if_present(value: str | None, attr_name: str, env_name: str):
+        if value is None:
+            return
+        cleaned = value.strip()
+        if cleaned == "":
+            return
+        setattr(config, attr_name, cleaned)
+        os.environ[env_name] = cleaned
+        changed.append(attr_name)
+
+    set_if_present(update.primary_api_key, "PRIMARY_API_KEY", "PRIMARY_MODEL_API_KEY")
+    set_if_present(update.primary_base_url, "PRIMARY_BASE_URL", "PRIMARY_MODEL_BASE_URL")
+    set_if_present(update.primary_model_name, "PRIMARY_MODEL_NAME", "PRIMARY_MODEL")
+    set_if_present(update.vision_api_key, "VISION_MODEL_API_KEY", "VISION_MODEL_API_KEY")
+    set_if_present(update.vision_base_url, "VISION_MODEL_BASE_URL", "VISION_MODEL_BASE_URL")
+    set_if_present(update.vision_model_name, "VISION_MODEL", "VISION_MODEL")
+
+    # 兼容旧代码别名，保持 LLMService 与老调用路径一致
+    config.LLM_API_KEY = config.PRIMARY_API_KEY
+    config.LLM_BASE_URL = config.PRIMARY_BASE_URL
+    config.LLM_MODEL = config.PRIMARY_MODEL_NAME
+
+    if changed:
+        # 仅重建受配置影响的服务，避免不必要的重启。
+        agent.llm = LLMService()
+        agent.vision = VisionService()
+        global vision_service
+        vision_service = VisionService()
+
+    return changed
 
 @app.websocket("/ws/chat")
 async def websocket_endpoint(websocket: WebSocket):
@@ -629,6 +677,35 @@ async def tts_worker(websocket: WebSocket, queue: asyncio.Queue, service: TTSSer
 @app.get("/health")
 def health_check():
     return {"status": "ok", "model": config.PRIMARY_MODEL_NAME}
+
+
+@app.get("/runtime-config")
+def get_runtime_config_status():
+    return {
+        "primary": {
+            "base_url": config.PRIMARY_BASE_URL,
+            "model": config.PRIMARY_MODEL_NAME,
+            "api_key_set": bool(config.PRIMARY_API_KEY)
+        },
+        "vision": {
+            "base_url": config.VISION_MODEL_BASE_URL,
+            "model": config.VISION_MODEL,
+            "api_key_set": bool(config.VISION_MODEL_API_KEY)
+        }
+    }
+
+
+@app.post("/runtime-config")
+def update_runtime_config(update: RuntimeConfigUpdate):
+    changed = _apply_runtime_config(update)
+    return {
+        "ok": True,
+        "changed": changed,
+        "active": {
+            "primary_model": config.PRIMARY_MODEL_NAME,
+            "vision_model": config.VISION_MODEL
+        }
+    }
 
 try:
     app.mount("/ui", StaticFiles(directory="desktop-app", html=True), name="static")
