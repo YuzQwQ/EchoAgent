@@ -767,5 +767,5 @@ async def root():
     return RedirectResponse(url="/ui/index.html")
 
 if __name__ == "__main__":
-    # 开发模式下运行
-    uvicorn.run("api_server:app", host="0.0.0.0", port=18000, reload=True)
+    reload_enabled = os.getenv("ECHO_RELOAD", "").strip().lower() in {"1", "true", "yes", "on"}
+    uvicorn.run("api_server:app", host="0.0.0.0", port=18000, reload=reload_enabled)

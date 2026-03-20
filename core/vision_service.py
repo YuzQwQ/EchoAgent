@@ -5,10 +5,12 @@ from typing import Optional
 
 class VisionService:
     def __init__(self):
-        self.client = OpenAI(
-            api_key=config.VISION_MODEL_API_KEY,
-            base_url=config.VISION_MODEL_BASE_URL
-        )
+        self.client = None
+        if config.VISION_MODEL_API_KEY:
+            self.client = OpenAI(
+                api_key=config.VISION_MODEL_API_KEY,
+                base_url=config.VISION_MODEL_BASE_URL
+            )
         self.model = config.VISION_MODEL
 
     def analyze_image(self, image_data: bytes, mime_type: str = "image/jpeg", mode: str = "chat", game_context: Optional[dict] = None, previous_context: Optional[str] = None) -> str:
@@ -25,7 +27,7 @@ class VisionService:
         Returns:
             图片的文本描述 (JSON 字符串 或 普通文本)
         """
-        if not config.VISION_MODEL_API_KEY:
+        if not config.VISION_MODEL_API_KEY or not self.client:
             return "⚠️ 视觉模型 API Key 未配置"
 
         try:

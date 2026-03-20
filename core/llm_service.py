@@ -10,11 +10,13 @@ except Exception:
 
 class LLMService:
     def __init__(self):
-        self.client = OpenAI(
-            api_key=config.LLM_API_KEY,
-            base_url=config.LLM_BASE_URL,
-            timeout=config.LLM_TIMEOUT_SECONDS
-        )
+        self.client = None
+        if config.LLM_API_KEY:
+            self.client = OpenAI(
+                api_key=config.LLM_API_KEY,
+                base_url=config.LLM_BASE_URL,
+                timeout=config.LLM_TIMEOUT_SECONDS
+            )
         self.model = config.LLM_MODEL
 
     def _fallback_message(self, err: Exception) -> str:
@@ -44,6 +46,8 @@ class LLMService:
         """
         非流式调用，支持 Function Calling
         """
+        if not self.client:
+            return None
         try:
             response = self.client.chat.completions.create(
                 model=self.model,
