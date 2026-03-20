@@ -494,6 +494,103 @@ class EchoAgent:
         thread.daemon = True # 设置为守护线程，防止阻塞主程序退出
         thread.start()
 
+    def _analyze_tool_intent(self, user_input: str) -> Dict[str, Any]:
+        import re
+
+        lower_input = user_input.lower()
+        file_markers = (
+            "文件" in user_input
+            or "文档" in user_input
+            or "文本" in user_input
+            or "file" in lower_input
+            or bool(re.search(r"[A-Za-z]:\\", user_input))
+            or any(ext in lower_input for ext in [".txt", ".md", ".json", ".log", ".csv", ".yaml", ".yml"])
+        )
+        file_actions = (
+            "读取" in user_input
+            or "打开" in user_input
+            or "查看" in user_input
+            or "写入" in user_input
+            or "写到" in user_input
+            or "追加" in user_input
+            or "创建" in user_input
+            or "新建" in user_input
+            or "read file" in lower_input
+            or "open file" in lower_input
+            or "write file" in lower_input
+            or "append file" in lower_input
+            or "create file" in lower_input
+            or "save file" in lower_input
+        )
+        clipboard_markers = (
+            "剪贴板" in user_input
+            or "粘贴" in user_input
+            or "clipboard" in lower_input
+            or "copy" in lower_input
+            or "paste" in lower_input
+        )
+        time_markers = (
+            "时间" in user_input
+            or "几点" in user_input
+            or "日期" in user_input
+            or "今天" in user_input
+            or "现在" in user_input
+            or "what time" in lower_input
+            or "date" in lower_input
+        )
+        history_markers = (
+            "项目历史" in user_input
+            or "最近更新" in user_input
+            or "更新记录" in user_input
+            or "git log" in lower_input
+            or "project history" in lower_input
+        )
+
+        if file_markers and file_actions:
+            return {"category": "file", "force": True, "direct_return": True}
+        if clipboard_markers:
+            return {"category": "clipboard", "force": True, "direct_return": True}
+        if time_markers:
+            return {"category": "time", "force": True, "direct_return": True}
+        if history_markers:
+            return {"category": "history", "force": True, "direct_return": True}
+        return {"category": None, "force": False, "direct_return": False}
+
+    def _build_tool_call_prompt(self, intent: Dict[str, Any]) -> str:
+        prompt = (
+            "你可以调用系统工具来读取事实或执行操作。\n"
+            "涉及文件、剪贴板、时间、项目历史时，必须优先调用对应工具，不能臆造结果。\n"
+            "如果没有真实工具返回，绝不能声称“已写入”“已创建”“已复制”或给出虚构路径。\n"
+            "File 工具的 path 必须是用户明确提到的文件名或路径；相对路径默认位于 _echo_workspace 下。\n"
+            "如果用户没有给出完成操作所需的最小信息，就不要猜，直接简短说明缺少什么。"
+        )
+        category = intent.get("category")
+        if category == "file":
+            prompt += "\n本轮优先判断是否需要调用 File 工具。"
+        elif category == "clipboard":
+            prompt += "\n本轮优先判断是否需要调用 Clipboard 工具。"
+        elif category == "time":
+            prompt += "\n本轮优先判断是否需要调用 GetCurrentTime 工具。"
+        elif category == "history":
+            prompt += "\n本轮优先判断是否需要调用 ProjectHistory 工具。"
+        return prompt
+
+    def _should_return_tool_directly(self, intent: Dict[str, Any], executed_tools: list) -> Optional[str]:
+        if not intent.get("direct_return"):
+            return None
+        if len(executed_tools) != 1:
+            return None
+
+        executed = executed_tools[0]
+        tool_name = executed.get("tool")
+        kwargs = executed.get("kwargs") or {}
+        action = kwargs.get("action")
+        if tool_name == "File" and action not in {"read", "write", "append", "create"}:
+            return None
+        if tool_name not in {"File", "Clipboard", "GetCurrentTime", "ProjectHistory"}:
+            return None
+        return str(executed.get("result", ""))
+
     def chat(self, user_input: str, allow_behavior_memory: bool = True, allow_l0: bool = False) -> Generator[str, None, None]:
         """
         处理用户输入，生成回复，并管理记忆
@@ -504,126 +601,16 @@ class EchoAgent:
         trace_id = uuid.uuid4().hex[:8]
         start_time = time.monotonic()
         print(f"[trace:{trace_id}] chat_start")
-        # 1. 保存用户输入到记忆
+
         self.memory.add_message("user", user_input)
         self.memory.increment_turn()
         event = self._extract_context_event(user_input)
         if event:
             self.memory.add_l2_event(event, max_items=self.l2_max_items)
 
-        # 2. 获取上下文
         context = self.memory.get_context()
-
         lower_input = user_input.lower()
-        mentions_clipboard = (
-            "剪贴板" in user_input
-            or "clipboard" in lower_input
-            or "粘贴" in user_input
-            or "paste" in lower_input
-        )
-        wants_clipboard_read = (
-            "看看" in user_input
-            or "查看" in user_input
-            or "读取" in user_input
-            or "read" in lower_input
-        )
-        wants_clipboard_write = (
-            "写入" in user_input
-            or "复制" in user_input
-            or "拷贝" in user_input
-            or "copy" in lower_input
-        )
-        clipboard_tool = self.tools.get_tool("Clipboard")
-        clipboard_result = None
-        if mentions_clipboard and clipboard_tool:
-            if wants_clipboard_write:
-                import re
-                match = re.search(r"(?:写入剪贴板|复制到剪贴板|拷贝到剪贴板|放到剪贴板|写入|复制|拷贝)[:： ]?(.*)$", user_input)
-                content = match.group(1).strip() if match else ""
-                try:
-                    clipboard_result = clipboard_tool.execute(action="write", content=content)
-                except Exception as e:
-                    clipboard_result = f"【工具结果 Clipboard.write】写入失败：{str(e)}"
-            if wants_clipboard_read:
-                try:
-                    clipboard_result = clipboard_tool.execute(action="read")
-                except Exception as e:
-                    clipboard_result = f"【工具结果 Clipboard.read】读取失败：{str(e)}"
 
-        file_tool = self.tools.get_tool("File")
-        file_result = None
-        wants_file_read = False
-        wants_file_write = False
-        wants_file_append = False
-        wants_file_create = False
-        if file_tool:
-            mentions_file = (
-                "文件" in user_input
-                or "file" in lower_input
-                or ".txt" in lower_input
-                or ".log" in lower_input
-            )
-            wants_file_read = (
-                "读取文件" in user_input
-                or "打开文件" in user_input
-                or "查看文件" in user_input
-                or "读文件" in user_input
-                or "read file" in lower_input
-            )
-            wants_file_write = (
-                "写入文件" in user_input
-                or "写到文件" in user_input
-                or "保存到文件" in user_input
-                or "覆盖文件" in user_input
-                or "write file" in lower_input
-                or "save file" in lower_input
-            )
-            wants_file_append = (
-                "追加到文件" in user_input
-                or "附加到文件" in user_input
-                or "append file" in lower_input
-            )
-            wants_file_create = (
-                "新建文件" in user_input
-                or "创建文件" in user_input
-                or "新建文本文件" in user_input
-                or "创建文本文件" in user_input
-                or "create file" in lower_input
-            )
-            if mentions_file and (wants_file_read or wants_file_write or wants_file_append or wants_file_create):
-                import re
-                content = ""
-                path_part = user_input
-                if wants_file_write or wants_file_append:
-                    if "内容" in user_input:
-                        path_part, content = user_input.split("内容", 1)
-                    elif "\n" in user_input:
-                        path_part, content = user_input.split("\n", 1)
-                path_match = re.search(r"[A-Za-z]:\\[^\r\n]+", path_part)
-                if path_match:
-                    path = path_match.group(0).strip()
-                else:
-                    quoted = re.search(r"\"([^\"]+)\"|'([^']+)'", path_part)
-                    if quoted:
-                        path = quoted.group(1) or quoted.group(2)
-                    else:
-                        after = re.search(r"(?:文件|file)[:： ]*([^\r\n]+)", path_part, re.IGNORECASE)
-                        path = after.group(1).strip() if after else ""
-                action = "read"
-                if wants_file_write:
-                    action = "write"
-                elif wants_file_append:
-                    action = "append"
-                elif wants_file_create:
-                    action = "create"
-                if path:
-                    file_result = file_tool.execute(action=action, path=path.strip(), content=content.strip())
-                else:
-                    file_result = "【错误】未提供文件路径。"
-        if file_result is not None:
-            self.memory.add_message("assistant", str(file_result))
-            yield str(file_result)
-            return
         behavior_prompt = self._build_layered_memory_prompt(user_input, allow_behavior_memory, allow_l0=allow_l0)
         if behavior_prompt:
             behavior_msg = {"role": "system", "content": behavior_prompt}
@@ -632,32 +619,13 @@ class EchoAgent:
             else:
                 context.append(behavior_msg)
 
-        if clipboard_result is not None:
-            clipboard_note = clipboard_result
-            if clipboard_result.startswith("【剪贴板内容读取成功】"):
-                parts = clipboard_result.split("\n", 1)
-                clipboard_note = parts[1] if len(parts) > 1 else ""
-            label = "【剪贴板真实内容】" if wants_clipboard_read else "【剪贴板操作结果】"
-            if context and context[-1]["role"] == "user":
-                context[-1]["content"] = f"{context[-1]['content']}\n\n{label}{clipboard_note}"
-            else:
-                context.append({"role": "user", "content": f"{label}{clipboard_note}"})
-
-        if file_result is not None:
-            label = "【文件读取结果】" if wants_file_read else "【文件操作结果】"
-            if context and context[-1]["role"] == "user":
-                context[-1]["content"] = f"{context[-1]['content']}\n\n{label}{file_result}"
-            else:
-                context.append({"role": "user", "content": f"{label}{file_result}"})
-
-        # [新增] 短期逻辑强化 (Context Reinforcement)
         reinforcement_content = (
             "【守则】\n"
             "1. **一致性**：不自相矛盾，不复读。\n"
             "2. **聚焦**：除非用户转话题，否则聚焦当前。\n"
             "3. **禁忌**：禁 AI 梗、Emoji、Meta 发言。\n"
             "4. **格式**：先 <thought> 后 <response>。\n"
-            "5. **事实**：客观事实（时间/剪贴板）必须用工具。"
+            "5. **事实**：客观事实（时间/剪贴板/文件）必须用工具，严禁编造操作结果。"
         )
         reinforcement_prompt = {
             "role": "system",
@@ -668,7 +636,6 @@ class EchoAgent:
         else:
             context.append(reinforcement_prompt)
 
-        # [新增] RAG 知识注入 (L3 Knowledge)
         should_use_rag = False
         if self.rag:
             rag_keywords = [
@@ -692,19 +659,33 @@ class EchoAgent:
                 else:
                     context.append(rag_msg)
 
-        tool_info = self._run_tool_calls(context, user_input, clipboard_result, file_result)
+        tool_info = self._run_tool_calls(context, user_input)
         if tool_info:
             print(f"[trace:{trace_id}] tool_check rule={tool_info.get('rule')} llm={tool_info.get('llm')} tool_calls={tool_info.get('tool_calls')}")
+            direct_result = tool_info.get("direct_result")
+            if direct_result is not None:
+                self.memory.add_message("assistant", str(direct_result))
+                self._run_async_summary()
+                elapsed_ms = int((time.monotonic() - start_time) * 1000)
+                print(f"[trace:{trace_id}] chat_end elapsed_ms={elapsed_ms} response_chars={len(str(direct_result))}")
+                yield str(direct_result)
+                return
 
-        # 4. 调用 LLM 生成回复 (使用 process_stream_response 处理 Hidden CoT)
+            blocked_reason = tool_info.get("blocked_reason")
+            if blocked_reason:
+                self.memory.add_message("assistant", str(blocked_reason))
+                self._run_async_summary()
+                elapsed_ms = int((time.monotonic() - start_time) * 1000)
+                print(f"[trace:{trace_id}] chat_end elapsed_ms={elapsed_ms} response_chars={len(str(blocked_reason))}")
+                yield str(blocked_reason)
+                return
+
         final_response = yield from self._process_stream_response(context, trace_id=trace_id)
 
-        # 5. 保存 Echo 的回复到记忆
         if final_response:
             self.memory.add_message("assistant", final_response)
-            
-            # 6. 异步触发滚动摘要
             self._run_async_summary()
+
         elapsed_ms = int((time.monotonic() - start_time) * 1000)
         print(f"[trace:{trace_id}] chat_end elapsed_ms={elapsed_ms} response_chars={len(final_response or '')}")
 
@@ -1046,70 +1027,112 @@ class EchoAgent:
         except Exception as e:
             return None, f"Invalid tool arguments: {str(e)}"
 
-    def _run_tool_calls(self, context, user_input: str, clipboard_result, file_result):
+    def _run_tool_calls(self, context, user_input: str):
         tools_schema = [t.to_dict() for t in self.tools.get_all_tools()]
         if not tools_schema:
             return None
-        should_try_tool_call = False
-        tool_keywords = [
-            "剪贴板", "clipboard", "时间", "几点", "日期", "今天", "现在",
-            "项目历史", "最近更新", "更新记录"
-        ]
-        if any(k in user_input for k in tool_keywords) or any(k in user_input.lower() for k in tool_keywords):
-            should_try_tool_call = True
-        if clipboard_result is not None:
-            should_try_tool_call = False
-        if file_result is not None:
-            should_try_tool_call = False
-        llm_judged = self._should_call_tool_by_llm(user_input, tools_schema)
+
+        intent = self._analyze_tool_intent(user_input)
+        should_try_tool_call = intent.get("force", False)
+        llm_judged = False
+        if not should_try_tool_call:
+            llm_judged = self._should_call_tool_by_llm(user_input, tools_schema)
         if not should_try_tool_call and not llm_judged:
-            return {"rule": False, "llm": False, "tool_calls": 0}
+            return {"rule": False, "llm": False, "tool_calls": 0, "executed_tools": []}
+
+        tool_context = copy.deepcopy(context)
+        tool_prompt = {"role": "system", "content": self._build_tool_call_prompt(intent)}
+        if tool_context and tool_context[-1]["role"] == "user":
+            tool_context.insert(-1, tool_prompt)
+        else:
+            tool_context.append(tool_prompt)
+
         try:
-            tool_call_result = self.llm.chat_completion_with_tools(context, tools=tools_schema)
-            tool_calls_count = 0
-            if tool_call_result and getattr(tool_call_result, 'tool_calls', None):
-                tool_calls_count = len(tool_call_result.tool_calls)
-                if hasattr(tool_call_result, 'model_dump'):
-                    context.append(tool_call_result.model_dump())
-                elif hasattr(tool_call_result, 'to_dict'):
-                    context.append(tool_call_result.to_dict())
-                else:
-                    context.append(tool_call_result)
-                for tool_call in tool_call_result.tool_calls:
-                    function_name = tool_call.function.name
-                    arguments = tool_call.function.arguments
-                    call_id = tool_call.id
-                    tool_instance = self.tools.get_tool(function_name)
-                    if tool_instance:
-                        kwargs, arg_error = self._parse_tool_arguments(arguments)
-                        if kwargs is None:
-                            result = {
-                                "tool": function_name,
-                                "ok": False,
-                                "error": arg_error or "Invalid tool arguments"
-                            }
-                        else:
-                            try:
-                                result = tool_instance.execute(**kwargs)
-                            except Exception as e:
-                                result = f"Error executing {function_name}: {str(e)}"
-                    else:
-                        result = f"Error: Tool {function_name} not found."
-                    import json
-                    tool_payload = {
+            tool_choice = "required" if intent.get("force") else None
+            tool_call_result = self.llm.chat_completion_with_tools(
+                tool_context,
+                tools=tools_schema,
+                tool_choice=tool_choice,
+            )
+            tool_calls = list(getattr(tool_call_result, 'tool_calls', None) or [])
+            if not tool_calls:
+                blocked_reason = None
+                if intent.get("force"):
+                    blocked_reason = "【错误】这是一个需要调用工具的请求，但这次没有生成有效工具调用。请把目标文件、路径或内容说得更明确一点。"
+                return {
+                    "rule": should_try_tool_call,
+                    "llm": llm_judged,
+                    "tool_calls": 0,
+                    "executed_tools": [],
+                    "blocked_reason": blocked_reason,
+                    "direct_result": None,
+                }
+
+            if hasattr(tool_call_result, 'model_dump'):
+                context.append(tool_call_result.model_dump())
+            elif hasattr(tool_call_result, 'to_dict'):
+                context.append(tool_call_result.to_dict())
+            else:
+                context.append(tool_call_result)
+
+            executed_tools = []
+            import json
+
+            for tool_call in tool_calls:
+                function_name = tool_call.function.name
+                arguments = tool_call.function.arguments
+                call_id = tool_call.id
+                tool_instance = self.tools.get_tool(function_name)
+                kwargs, arg_error = self._parse_tool_arguments(arguments)
+
+                if tool_instance is None:
+                    result = f"Error: Tool {function_name} not found."
+                elif kwargs is None:
+                    result = {
                         "tool": function_name,
-                        "ok": not (isinstance(result, str) and result.startswith("Error")),
-                        "data": result
+                        "ok": False,
+                        "error": arg_error or "Invalid tool arguments"
                     }
-                    context.append({
-                        "role": "tool",
-                        "tool_call_id": call_id,
-                        "content": json.dumps(tool_payload, ensure_ascii=False)
-                    })
-            return {"rule": should_try_tool_call, "llm": llm_judged, "tool_calls": tool_calls_count}
+                else:
+                    try:
+                        result = tool_instance.execute(**kwargs)
+                    except Exception as e:
+                        result = f"Error executing {function_name}: {str(e)}"
+
+                tool_payload = {
+                    "tool": function_name,
+                    "ok": not (isinstance(result, str) and result.startswith("Error")),
+                    "data": result
+                }
+                context.append({
+                    "role": "tool",
+                    "tool_call_id": call_id,
+                    "content": json.dumps(tool_payload, ensure_ascii=False)
+                })
+                executed_tools.append({
+                    "tool": function_name,
+                    "kwargs": kwargs,
+                    "result": result,
+                })
+
+            return {
+                "rule": should_try_tool_call,
+                "llm": llm_judged,
+                "tool_calls": len(tool_calls),
+                "executed_tools": executed_tools,
+                "direct_result": self._should_return_tool_directly(intent, executed_tools),
+                "blocked_reason": None,
+            }
         except Exception as e:
             print(f"Tool call check failed: {e}")
-            return {"rule": should_try_tool_call, "llm": llm_judged, "tool_calls": 0}
+            return {
+                "rule": should_try_tool_call,
+                "llm": llm_judged,
+                "tool_calls": 0,
+                "executed_tools": [],
+                "blocked_reason": None,
+                "direct_result": None,
+            }
     
     def get_history(self):
         return self.memory.load_history()

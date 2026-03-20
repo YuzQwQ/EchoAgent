@@ -35,7 +35,12 @@ class LLMService:
     def _log_error(self, err: Exception):
         print(f"LLM Error: {type(err).__name__}: {err}")
 
-    def chat_completion_with_tools(self, messages: List[Dict[str, str]], tools: Optional[List[Dict[str, Any]]] = None) -> Any:
+    def chat_completion_with_tools(
+        self,
+        messages: List[Dict[str, str]],
+        tools: Optional[List[Dict[str, Any]]] = None,
+        tool_choice: Optional[str] = None
+    ) -> Any:
         """
         非流式调用，支持 Function Calling
         """
@@ -44,6 +49,7 @@ class LLMService:
                 model=self.model,
                 messages=messages,
                 tools=tools if tools else None,
+                tool_choice=tool_choice if tool_choice else None,
                 stream=False
             )
             return response.choices[0].message

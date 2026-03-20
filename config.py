@@ -1,15 +1,16 @@
 import os
 from dotenv import load_dotenv
 
+PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+
 # 加载 .env 文件
 load_dotenv(override=True)
 
 def load_system_prompt():
     """从文件加载 System Prompt"""
     try:
-        base_dir = os.path.dirname(os.path.abspath(__file__))
         candidate_paths = [
-            os.path.join(base_dir, "core", "system_prompt.md"),
+            os.path.join(PROJECT_ROOT, "core", "system_prompt.md"),
             os.path.join(os.getcwd(), "core", "system_prompt.md")
         ]
         for prompt_path in candidate_paths:
@@ -24,6 +25,8 @@ def load_system_prompt():
     return os.getenv("SYSTEM_PROMPT", "You are Echo, a helpful AI assistant.")
 
 class Config:
+    PROJECT_ROOT = os.path.abspath(os.getenv("ECHO_PROJECT_ROOT", PROJECT_ROOT))
+
     # --- Primary Model (Chat) ---
     # 优先读取 PRIMARY_ 前缀，回退到旧的 LLM_ 前缀以保持兼容（如果有旧配置残留）
     PRIMARY_API_KEY = os.getenv("PRIMARY_MODEL_API_KEY") or os.getenv("LLM_API_KEY", "")
@@ -54,16 +57,22 @@ class Config:
     # GPT-SoVITS Config
     GPT_SOVITS_URL = os.getenv("GPT_SOVITS_URL", "http://127.0.0.1:9880/tts")
 
+    WORKSPACE_ROOT = os.path.abspath(
+        os.getenv("ECHO_WORKSPACE_ROOT", os.path.join(PROJECT_ROOT, "_echo_workspace"))
+    )
     # Agent Config记忆设置
-    HISTORY_DIR = os.getenv("HISTORY_DIR", os.path.join(os.getcwd(), "history"))
+    HISTORY_DIR = os.path.abspath(
+        os.getenv("HISTORY_DIR", os.path.join(WORKSPACE_ROOT, "history"))
+    )
     HISTORY_SESSION_ID = os.getenv("HISTORY_SESSION_ID", os.getenv("ECHO_SESSION_ID", ""))
     HISTORY_MAX_FILES = int(os.getenv("HISTORY_MAX_FILES", 20))
     HISTORY_MAX_FILE_MB = int(os.getenv("HISTORY_MAX_FILE_MB", 8))
     HISTORY_FILE = (
         os.path.join(HISTORY_DIR, f"conversation_{HISTORY_SESSION_ID}.json")
         if HISTORY_SESSION_ID
-        else os.path.join(os.getcwd(), "conversation.json")
+        else os.path.join(WORKSPACE_ROOT, "conversation.json")
     )
+    LEGACY_HISTORY_FILE = os.path.join(PROJECT_ROOT, "conversation.json")
     MAX_HISTORY_ROUNDS = int(os.getenv("MAX_HISTORY_ROUNDS", 10))
 
     LLM_TIMEOUT_SECONDS = float(os.getenv("LLM_TIMEOUT_SECONDS", 30))

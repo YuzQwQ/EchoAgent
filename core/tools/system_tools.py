@@ -20,7 +20,7 @@ class ProjectHistoryTool(BaseTool):
                 capture_output=True,
                 text=True,
                 check=True,
-                cwd=os.getcwd() # 确保在项目根目录运行
+                cwd=config.PROJECT_ROOT # 确保在项目根目录运行
             )
             return f"【最近 10 条项目变更记录】\n{result.stdout}"
         except Exception as e:
@@ -146,7 +146,9 @@ class ClipboardTool(BaseTool):
 
 class FileTool(BaseTool):
     def __init__(self):
-        self.workspace_root = os.path.abspath(r"D:\develop\Echo\_echo_workspace")
+        self.project_root = os.path.abspath(config.PROJECT_ROOT)
+        self.workspace_root = os.path.abspath(config.WORKSPACE_ROOT)
+        os.makedirs(self.workspace_root, exist_ok=True)
         description = (
             "【文本文件读写工具】\n"
             f"仅允许在工作区内读写：{self.workspace_root}\n"
@@ -172,19 +174,6 @@ class FileTool(BaseTool):
             }
         }
 
-    def _resolve_path(self, path: str) -> str:
-        if not path:
-            raise ValueError("缺少文件路径")
-        cleaned = path.strip().strip('"').strip("'")
-        if not os.path.isabs(cleaned):
-            cleaned = os.path.join(self.workspace_root, cleaned)
-        full_path = os.path.abspath(cleaned)
-        if not os.path.isdir(self.workspace_root):
-            raise ValueError(f"工作区不存在：{self.workspace_root}")
-        if os.path.commonpath([full_path, self.workspace_root]) != self.workspace_root:
-            raise ValueError("路径不在允许的工作区内")
-        return full_path
-
     def _ensure_writable(self, target_path: str):
         try:
             os.chmod(self.workspace_root, stat.S_IWRITE | stat.S_IREAD | stat.S_IEXEC)
@@ -209,13 +198,59 @@ class FileTool(BaseTool):
             os.chmod(fallback_dir, stat.S_IWRITE | stat.S_IREAD | stat.S_IEXEC)
             return os.path.join(fallback_dir, os.path.basename(target_path))
         except Exception:
-            secondary_root = os.path.join(os.getcwd(), "_echo_workspace")
+            secondary_root = self.workspace_root
             try:
                 os.makedirs(secondary_root, exist_ok=True)
                 os.chmod(secondary_root, stat.S_IWRITE | stat.S_IREAD | stat.S_IEXEC)
             except Exception:
                 pass
             return os.path.join(secondary_root, os.path.basename(target_path))
+
+    def _is_within_workspace(self, target_path: str, root_path: str) -> bool:
+        try:
+            return os.path.commonpath([target_path, root_path]) == root_path
+        except ValueError:
+            return False
+
+    def _normalize_user_path(self, path: str) -> str:
+        cleaned = path.strip().strip('"').strip("'").replace("/", os.sep)
+        workspace_name = os.path.basename(self.workspace_root.rstrip("\\/"))
+        prefixes = (
+            f"{workspace_name}{os.sep}",
+            f".{os.sep}{workspace_name}{os.sep}",
+        )
+        for prefix in prefixes:
+            if cleaned.lower().startswith(prefix.lower()):
+                cleaned = cleaned[len(prefix):]
+                break
+        return cleaned.lstrip("\\/")
+
+    def _resolve_path(self, path: str) -> str:
+        if not path:
+            raise ValueError("缺少文件路径")
+
+        cleaned = self._normalize_user_path(path)
+        if not cleaned or cleaned == ".":
+            raise ValueError("缺少有效的文件路径")
+
+        if os.path.isabs(cleaned):
+            full_path = os.path.abspath(cleaned)
+            if self._is_within_workspace(full_path, self.workspace_root):
+                return full_path
+            if self._is_within_workspace(full_path, self.project_root):
+                relative_to_project = os.path.relpath(full_path, self.project_root)
+                workspace_name = os.path.basename(self.workspace_root.rstrip("\\/"))
+                if relative_to_project.lower().startswith(f"{workspace_name.lower()}{os.sep}"):
+                    relative_to_project = relative_to_project[len(workspace_name) + 1:]
+                full_path = os.path.abspath(os.path.join(self.workspace_root, relative_to_project))
+            else:
+                raise ValueError(f"路径不在允许的工作区内: {self.workspace_root}")
+        else:
+            full_path = os.path.abspath(os.path.join(self.workspace_root, cleaned))
+
+        if not self._is_within_workspace(full_path, self.workspace_root):
+            raise ValueError(f"路径不在允许的工作区内: {self.workspace_root}")
+        return full_path
 
     def execute(self, action: str = "read", path: str = "", content: str = "", **kwargs):
         try:

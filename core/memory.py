@@ -10,6 +10,7 @@ from config import config, load_system_prompt
 class MemoryManager:
     def __init__(self, file_path: str = config.HISTORY_FILE):
         self.file_path = file_path
+        self._legacy_file_path = config.LEGACY_HISTORY_FILE
         self._history_dir = os.path.dirname(self.file_path)
         self._max_files = config.HISTORY_MAX_FILES
         self._max_bytes = config.HISTORY_MAX_FILE_MB * 1024 * 1024
@@ -20,6 +21,7 @@ class MemoryManager:
         self._flush_every = 5
         self._flush_interval = 2.0
         self._lock = threading.Lock()
+        self._migrate_legacy_history_if_needed()
         self._ensure_file_exists()
         atexit.register(self.flush)
 
@@ -43,6 +45,39 @@ class MemoryManager:
                 "turn": 0
             }
         }
+
+    def _safe_load_json(self, path: str) -> Dict[str, Any] | None:
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                return self._normalize_data(json.load(f))
+        except Exception:
+            return None
+
+    def _looks_empty(self, data: Dict[str, Any] | None) -> bool:
+        if not data:
+            return True
+        if data.get("summary"):
+            return False
+        if data.get("messages"):
+            return False
+        memory_layers = data.get("memory_layers") or {}
+        return not any(memory_layers.get(layer_name) for layer_name in memory_layers)
+
+    def _migrate_legacy_history_if_needed(self):
+        legacy_path = self._legacy_file_path
+        if not legacy_path or os.path.abspath(legacy_path) == os.path.abspath(self.file_path):
+            return
+        if not os.path.exists(legacy_path):
+            return
+
+        current_data = self._safe_load_json(self.file_path) if os.path.exists(self.file_path) else None
+        legacy_data = self._safe_load_json(legacy_path)
+        if not legacy_data or not self._looks_empty(current_data):
+            return
+
+        if self._history_dir and not os.path.exists(self._history_dir):
+            os.makedirs(self._history_dir, exist_ok=True)
+        self._write_to_disk(legacy_data, allow_rotate=False)
 
     def _ensure_file_exists(self):
         """确保存储文件存在"""
