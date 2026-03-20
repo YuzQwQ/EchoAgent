@@ -114,7 +114,7 @@
                 handlers.onStatus?.(false, 'Echo 离线，重连中...');
                 handlers.onSystemMessage?.('与 Echo 断开连接，正在尝试重连...');
                 handlers.onSendEnabled?.(false);
-                reconnectTimer = setTimeout(connect, 3000);
+                reconnectTimer = setTimeout(() => connect(handlers), 3000);
             };
 
             ws.onerror = (err) => {
