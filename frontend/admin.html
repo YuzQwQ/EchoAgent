@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self' https://cdn.jsdelivr.net; script-src 'self' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; connect-src 'self' ws: wss: http: https:;">
+    <title>Echo Admin</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css">
+    <style>
+        :root {
+            color-scheme: dark;
+        }
+
+        body {
+            margin: 0;
+            min-height: 100vh;
+            background:
+                radial-gradient(circle at top, rgba(82, 122, 255, 0.18), transparent 32%),
+                linear-gradient(180deg, #0c1018 0%, #131a26 100%);
+            color: #eef3ff;
+            font-family: "Segoe UI", "PingFang SC", sans-serif;
+        }
+
+        .admin-shell {
+            width: min(920px, calc(100vw - 32px));
+            margin: 32px auto;
+        }
+
+        .admin-card {
+            background: rgba(18, 24, 36, 0.82);
+            border: 1px solid rgba(160, 180, 220, 0.18);
+            border-radius: 24px;
+            box-shadow: 0 24px 60px rgba(0, 0, 0, 0.28);
+            backdrop-filter: blur(18px);
+        }
+
+        .admin-muted {
+            color: rgba(221, 229, 255, 0.72);
+        }
+
+        .status-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 10px;
+            border-radius: 999px;
+            background: rgba(96, 122, 188, 0.18);
+            border: 1px solid rgba(140, 164, 224, 0.22);
+            font-size: 12px;
+            color: #dfe8ff;
+        }
+
+        .state-pill {
+            display: inline-flex;
+            align-items: center;
+            padding: 4px 10px;
+            border-radius: 999px;
+            font-size: 12px;
+            background: rgba(255, 255, 255, 0.08);
+        }
+
+        .state-pill.ok {
+            background: rgba(54, 179, 126, 0.18);
+            color: #93f0c3;
+        }
+
+        .state-pill.empty {
+            background: rgba(255, 193, 7, 0.16);
+            color: #ffd57b;
+        }
+    </style>
+</head>
+<body>
+    <main class="admin-shell">
+        <section class="admin-card p-4 p-md-5">
+            <div class="d-flex flex-column flex-md-row align-items-md-center justify-content-between gap-3 mb-4">
+                <div>
+                    <h1 class="h3 mb-2">Echo Admin</h1>
+                    <p class="admin-muted mb-0">单独管理服务端模型配置。Bridge 客户端不再承载这些能力。</p>
+                </div>
+                <div class="status-chip" id="admin-status-chip">等待连接</div>
+            </div>
+
+            <div class="row g-3 mb-4">
+                <div class="col-md-6">
+                    <label for="server-address-input" class="form-label">服务地址</label>
+                    <input id="server-address-input" class="form-control" type="text" placeholder="https://echo.example.com">
+                </div>
+                <div class="col-md-6">
+                    <label for="admin-token-input" class="form-label">管理 Token</label>
+                    <input id="admin-token-input" class="form-control" type="password" placeholder="用于读取和写入运行时配置">
+                </div>
+            </div>
+
+            <div class="d-flex flex-wrap gap-2 mb-4">
+                <button id="load-config-btn" class="btn btn-outline-light btn-sm">读取当前配置</button>
+                <button id="save-config-btn" class="btn btn-primary btn-sm">保存到服务端</button>
+            </div>
+
+            <div id="admin-status-text" class="admin-muted mb-4">先读取一次配置，再决定是否修改。</div>
+
+            <section class="mb-4">
+                <div class="d-flex align-items-center justify-content-between mb-2">
+                    <h2 class="h5 mb-0">Chat 模型</h2>
+                    <span id="primary-api-key-state" class="state-pill empty">API Key 未知</span>
+                </div>
+                <div class="row g-3">
+                    <div class="col-12">
+                        <label for="primary-api-key-input" class="form-label">Chat API Key</label>
+                        <input id="primary-api-key-input" class="form-control" type="password" placeholder="留空则不修改现有值">
+                    </div>
+                    <div class="col-md-7">
+                        <label for="primary-base-url-input" class="form-label">Chat Base URL</label>
+                        <input id="primary-base-url-input" class="form-control" type="text" placeholder="https://api.openai.com/v1">
+                    </div>
+                    <div class="col-md-5">
+                        <label for="primary-model-input" class="form-label">Chat Model</label>
+                        <input id="primary-model-input" class="form-control" type="text" placeholder="gpt-4o-mini">
+                    </div>
+                </div>
+            </section>
+
+            <section>
+                <div class="d-flex align-items-center justify-content-between mb-2">
+                    <h2 class="h5 mb-0">Vision 模型</h2>
+                    <span id="vision-api-key-state" class="state-pill empty">API Key 未知</span>
+                </div>
+                <div class="row g-3">
+                    <div class="col-12">
+                        <label for="vision-api-key-input" class="form-label">Vision API Key</label>
+                        <input id="vision-api-key-input" class="form-control" type="password" placeholder="留空则不修改现有值">
+                    </div>
+                    <div class="col-md-7">
+                        <label for="vision-base-url-input" class="form-label">Vision Base URL</label>
+                        <input id="vision-base-url-input" class="form-control" type="text" placeholder="https://api.siliconflow.cn/v1">
+                    </div>
+                    <div class="col-md-5">
+                        <label for="vision-model-input" class="form-label">Vision Model</label>
+                        <input id="vision-model-input" class="form-control" type="text" placeholder="qwen-vl-max">
+                    </div>
+                </div>
+            </section>
+        </section>
+    </main>
+
+    <script src="js/config/storage.js"></script>
+    <script src="js/config/runtime-config.js"></script>
+    <script src="js/admin/panel.js"></script>
+</body>
+</html>

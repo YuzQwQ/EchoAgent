@@ -3,6 +3,7 @@
     const storage = window.storage;
     const runtimeConfig = window.runtimeConfig;
     const appState = window.appState;
+    const appEnv = window.appEnv || {};
     const wsClient = window.wsClient;
     const audioPlayer = window.audioPlayer;
     const showSubtitle = window.showSubtitle;
@@ -28,7 +29,7 @@
             if (!text || !isConnected()) return;
 
             audioPlayer?.reset();
-            showSubtitle?.(`我: ${text}`, true);
+            showSubtitle?.(`Me: ${text}`, true);
             wsClient?.sendText(text);
 
             dom.miniInput.value = '';
@@ -41,9 +42,9 @@
         const sendImage = (file) => {
             if (!isConnected()) return;
             const reader = new FileReader();
-            reader.onload = function(e) {
+            reader.onload = (e) => {
                 const base64Data = e.target.result;
-                showSubtitle?.('📷 [发送了一张图片]', true);
+                showSubtitle?.('[Image sent]', true);
                 wsClient?.sendImage(base64Data);
             };
             reader.readAsDataURL(file);
@@ -54,7 +55,7 @@
             this.style.height = this.scrollHeight + 'px';
         });
 
-        dom.miniInput.addEventListener('keydown', function(e) {
+        dom.miniInput.addEventListener('keydown', (e) => {
             if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
                 sendMessage();
@@ -63,7 +64,6 @@
 
         dom.miniSendBtn.addEventListener('click', sendMessage);
         dom.imgBtn.addEventListener('click', () => dom.imageUpload.click());
-
         dom.imageUpload.addEventListener('change', function() {
             if (this.files && this.files[0]) {
                 sendImage(this.files[0]);
@@ -73,18 +73,34 @@
     }
 
     if (dom?.settingsBtn && dom.settingsModal && storage && runtimeConfig && appState) {
+        const updateAdminLink = () => {
+            if (!dom.openAdminPanelLink) {
+                return;
+            }
+
+            const serverAddress = dom.serverIpInput?.value?.trim() || appState.connection.serverAddress;
+            if (!serverAddress) {
+                dom.openAdminPanelLink.href = '#';
+                dom.openAdminPanelLink.setAttribute('aria-disabled', 'true');
+                return;
+            }
+
+            dom.openAdminPanelLink.href = runtimeConfig.buildAdminUrl(serverAddress);
+            dom.openAdminPanelLink.removeAttribute('aria-disabled');
+        };
+
         const openModal = () => {
-            dom.serverIpInput.value = appState.connection.serverIp;
+            dom.serverIpInput.value = appState.connection.serverAddress;
             if (dom.observerModeSelect) dom.observerModeSelect.value = appState.observer.mode;
-            runtimeConfig.fillInputs(dom, storage.getRuntimeConfig());
-            if (dom.rememberKeysCheckbox) {
-                dom.rememberKeysCheckbox.checked = storage.getRuntimeRemember();
+            if (dom.accessTokenInput) {
+                dom.accessTokenInput.value = storage.getAccessToken();
             }
-            if (dom.adminTokenInput) {
-                dom.adminTokenInput.value = storage.getAdminToken();
-            }
+            updateAdminLink();
+
             if (dom.runtimeConfigStatus) {
-                dom.runtimeConfigStatus.textContent = '提示：密钥默认仅保存在当前会话，可选记住。';
+                dom.runtimeConfigStatus.textContent = appEnv.isBridge
+                    ? 'Bridge mode only stores the server address, observer mode, and access token.'
+                    : 'Runtime model configuration has moved to the separate Admin page.';
             }
             dom.settingsModal.style.display = 'block';
         };
@@ -94,47 +110,32 @@
         };
 
         const saveSettings = async () => {
-            const newIp = dom.serverIpInput.value.trim();
+            const newAddress = dom.serverIpInput.value.trim();
             const newMode = dom.observerModeSelect ? dom.observerModeSelect.value : 'general';
-            const runtime = runtimeConfig.collectFromInputs(dom);
-            const rememberKeys = dom.rememberKeysCheckbox ? dom.rememberKeysCheckbox.checked : false;
-            const adminToken = dom.adminTokenInput ? dom.adminTokenInput.value : '';
+            const accessToken = dom.accessTokenInput ? dom.accessTokenInput.value : '';
 
-            if (!newIp) return;
+            if (!newAddress) return;
 
-            const prevIp = appState.connection.serverIp;
-            storage.setServerIp(newIp);
+            const prevAddress = appState.connection.serverAddress;
+            storage.setServerAddress(newAddress);
             storage.setObserverMode(newMode);
-            storage.setRuntimeConfig(runtime, rememberKeys);
-            storage.setAdminToken(adminToken);
-            appState.connection.serverIp = newIp;
+            storage.setAccessToken(accessToken);
+            appState.connection.serverAddress = newAddress;
             appState.observer.mode = newMode;
 
             if (dom.runtimeConfigStatus) {
-                dom.runtimeConfigStatus.textContent = '正在应用模型配置...';
-            }
-            try {
-                const applyResult = await runtimeConfig.applyRuntimeConfig(newIp, runtime);
-                if (dom.runtimeConfigStatus) {
-                    dom.runtimeConfigStatus.textContent = applyResult?.skipped
-                        ? '未填写模型参数，本次仅保存地址与模式。'
-                        : '模型配置已下发到后端并生效。';
-                }
-            } catch (err) {
-                console.warn(err);
-                if (dom.runtimeConfigStatus) {
-                    dom.runtimeConfigStatus.textContent = `模型配置下发失败：${err.message}`;
-                }
+                dom.runtimeConfigStatus.textContent = 'Connection settings saved.';
             }
 
-            alert('设置已保存。');
+            alert('Settings saved.');
             closeModal();
 
-            if (newIp !== prevIp) {
+            if (newAddress !== prevAddress) {
                 location.reload();
             }
         };
 
+        dom.serverIpInput?.addEventListener('input', updateAdminLink);
         dom.settingsBtn.addEventListener('click', openModal);
         dom.cancelSettingsBtn?.addEventListener('click', closeModal);
         dom.saveSettingsBtn?.addEventListener('click', saveSettings);
@@ -144,7 +145,7 @@
         let enabled = dom.ttsBtn.classList.contains('active');
 
         const updateUi = () => {
-            dom.ttsBtn.textContent = enabled ? '🔊' : '🔇';
+            dom.ttsBtn.textContent = enabled ? 'ON' : 'OFF';
             dom.ttsBtn.classList.toggle('active', enabled);
         };
 
@@ -169,11 +170,11 @@
 
     if (dom?.closeBtn) {
         window.appendSystemMessage = (text) => {
-            showSubtitle?.(`[系统]: ${text}`, true);
+            showSubtitle?.(`[System]: ${text}`, true);
         };
 
         dom.closeBtn.addEventListener('click', () => {
-            if (confirm('确定要让 Echo 休息一下吗？')) {
+            if (confirm('Let Echo rest for now?')) {
                 window.close();
             }
         });

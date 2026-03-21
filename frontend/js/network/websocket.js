@@ -6,7 +6,33 @@
         let textBuffer = '';
         let chunkActive = false;
 
-        const connect = (options) => {
+        const fetchWebSocketTicket = async ({ normalized, accessToken, adminToken }) => {
+            if (!normalized?.baseUrl) return null;
+
+            const headers = {};
+            if (accessToken) headers['X-Access-Token'] = accessToken;
+            if (adminToken) headers['X-Admin-Token'] = adminToken;
+            if (Object.keys(headers).length === 0) {
+                return null;
+            }
+
+            try {
+                const response = await fetch(`${normalized.baseUrl}/auth/ws-ticket`, {
+                    method: 'POST',
+                    headers
+                });
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+                const payload = await response.json();
+                return payload?.ticket || null;
+            } catch (err) {
+                console.warn('WebSocket ticket request failed:', err);
+                return null;
+            }
+        };
+
+        const connect = async (options) => {
             handlers = options || {};
             if (reconnectTimer) {
                 clearTimeout(reconnectTimer);
@@ -14,10 +40,24 @@
             }
 
             const getServerAddress = handlers.getServerAddress || (() => '');
-            const normalize = handlers.normalizeServerAddress || ((value) => ({ host: value, port: 80 }));
-            const { host, port } = normalize(getServerAddress());
-            const wsProtocol = location.protocol === 'https:' ? 'wss' : 'ws';
-            ws = new WebSocket(`${wsProtocol}://${host}:${port}/ws/chat`);
+            const getAccessToken = handlers.getAccessToken || (() => '');
+            const getAdminToken = handlers.getAdminToken || (() => '');
+            const normalize = handlers.normalizeServerAddress || ((value) => ({
+                wsBaseUrl: `ws://${value || '127.0.0.1:18000'}`
+            }));
+            const normalized = normalize(getServerAddress());
+            const accessToken = (getAccessToken() || '').trim();
+            const adminToken = (getAdminToken() || '').trim();
+            const wsUrl = new URL(`${normalized.wsBaseUrl}/ws/chat`);
+            const wsTicket = await fetchWebSocketTicket({ normalized, accessToken, adminToken });
+            if (wsTicket) {
+                wsUrl.searchParams.set('ticket', wsTicket);
+            } else if (accessToken) {
+                wsUrl.searchParams.set('access_token', accessToken);
+            } else if (adminToken) {
+                wsUrl.searchParams.set('admin_token', adminToken);
+            }
+            ws = new WebSocket(wsUrl.toString());
             handlers.onWs?.(ws);
 
             textBuffer = '';

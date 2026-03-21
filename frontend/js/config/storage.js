@@ -1,9 +1,10 @@
 (() => {
-    const getServerIp = (fallback) => {
-        return localStorage.getItem('server_ip') || fallback || '';
+    const getServerAddress = (fallback) => {
+        return localStorage.getItem('server_endpoint') || localStorage.getItem('server_ip') || fallback || '';
     };
 
-    const setServerIp = (value) => {
+    const setServerAddress = (value) => {
+        localStorage.setItem('server_endpoint', value || '');
         localStorage.setItem('server_ip', value || '');
     };
 
@@ -17,6 +18,7 @@
 
     const runtimeConfigKey = 'runtime_model_config';
     const runtimeRememberKey = 'runtime_model_remember';
+    const accessTokenKey = 'runtime_access_token';
     const adminTokenKey = 'runtime_admin_token';
 
     const getRuntimeRemember = () => {
@@ -53,6 +55,19 @@
         }
     };
 
+    const getAccessToken = () => {
+        return sessionStorage.getItem(accessTokenKey) || '';
+    };
+
+    const setAccessToken = (value) => {
+        const trimmed = (value || '').trim();
+        if (trimmed) {
+            sessionStorage.setItem(accessTokenKey, trimmed);
+        } else {
+            sessionStorage.removeItem(accessTokenKey);
+        }
+    };
+
     const getAdminToken = () => {
         return sessionStorage.getItem(adminTokenKey) || '';
     };
@@ -67,14 +82,18 @@
     };
 
     window.storage = {
-        getServerIp,
-        setServerIp,
+        getServerAddress,
+        setServerAddress,
+        getServerIp: getServerAddress,
+        setServerIp: setServerAddress,
         getObserverMode,
         setObserverMode,
         getRuntimeConfig,
         setRuntimeConfig,
         getRuntimeRemember,
         setRuntimeRemember,
+        getAccessToken,
+        setAccessToken,
         getAdminToken,
         setAdminToken
     };

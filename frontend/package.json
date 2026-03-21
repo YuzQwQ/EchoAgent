@@ -3,8 +3,12 @@
   "version": "1.0.0",
   "main": "main.js",
   "scripts": {
-    "start": "electron .",
-    "dist": "electron-builder"
+    "start": "npm run start:desktop",
+    "start:desktop": "electron .",
+    "start:bridge": "electron main_bridge.js",
+    "dist": "npm run dist:desktop",
+    "dist:desktop": "electron-builder",
+    "dist:bridge": "electron-builder --config electron-builder.bridge.json"
   },
   "build": {
     "appId": "com.echo.desktop",

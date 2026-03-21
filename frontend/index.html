@@ -126,7 +126,7 @@
         <div class="settings-header d-flex align-items-center justify-content-between mb-4">
             <div>
                 <h3 id="settings-title" class="settings-title mb-1">设置</h3>
-                <p class="text-secondary small mb-0">配置连接、观察模式与模型参数</p>
+                <p class="text-secondary small mb-0">配置连接、观察模式与访问令牌</p>
             </div>
         </div>
 
@@ -137,7 +137,7 @@
                     type="text"
                     id="server-ip-input"
                     class="settings-input form-control form-control-sm"
-                    placeholder="127.0.0.1:18000"
+                    placeholder="https://echo.example.com"
                 >
             </div>
 
@@ -148,106 +148,48 @@
                     <option value="terraria">泰拉瑞亚 (Terraria)</option>
                 </select>
             </div>
+
+            <div class="settings-field">
+                <label for="access-token-input" class="form-label">Access Token</label>
+                <input
+                    type="password"
+                    id="access-token-input"
+                    class="settings-input form-control form-control-sm"
+                    placeholder="用于聊天与 WebSocket 连接"
+                >
+            </div>
         </div>
 
-        <details class="settings-details mt-3">
-            <summary class="settings-summary">模型 API 配置（便于分发试用）</summary>
-
-            <div class="settings-grid mt-3">
-                <div class="settings-field">
-                    <label for="primary-api-key-input" class="form-label">Chat API Key</label>
-                    <input
-                        type="password"
-                        id="primary-api-key-input"
-                        class="settings-input form-control form-control-sm"
-                        placeholder="sk-..."
-                    >
-                </div>
-
-                <div class="settings-field">
-                    <label for="primary-base-url-input" class="form-label">Chat Base URL</label>
-                    <input
-                        type="text"
-                        id="primary-base-url-input"
-                        class="settings-input form-control form-control-sm"
-                        placeholder="https://api.openai.com/v1"
-                    >
-                </div>
-
-                <div class="settings-field">
-                    <label for="primary-model-input" class="form-label">Chat Model</label>
-                    <input
-                        type="text"
-                        id="primary-model-input"
-                        class="settings-input form-control form-control-sm"
-                        placeholder="gpt-4o-mini"
-                    >
-                </div>
-
-                <div class="settings-field">
-                    <label for="vision-api-key-input" class="form-label">Vision API Key</label>
-                    <input
-                        type="password"
-                        id="vision-api-key-input"
-                        class="settings-input form-control form-control-sm"
-                        placeholder="vision-key"
-                    >
-                </div>
-
-                <div class="settings-field">
-                    <label for="vision-base-url-input" class="form-label">Vision Base URL</label>
-                    <input
-                        type="text"
-                        id="vision-base-url-input"
-                        class="settings-input form-control form-control-sm"
-                        placeholder="https://api.siliconflow.cn/v1"
-                    >
-                </div>
-
-                <div class="settings-field">
-                    <label for="vision-model-input" class="form-label">Vision Model</label>
-                    <input
-                        type="text"
-                        id="vision-model-input"
-                        class="settings-input form-control form-control-sm"
-                        placeholder="qwen-vl-max"
-                    >
-                </div>
+        <section id="admin-panel-info" class="settings-details mt-3">
+            <div class="settings-hint form-text text-secondary">
+                运行时模型配置和管理令牌已经迁移到独立的 Admin 页面。
             </div>
-
-            <div class="settings-grid mt-3">
-                <div class="settings-field">
-                    <label for="admin-token-input" class="form-label">管理 Token</label>
-                    <input
-                        type="password"
-                        id="admin-token-input"
-                        class="settings-input form-control form-control-sm"
-                        placeholder="可选，仅用于修改配置"
-                    >
-                </div>
-                <div class="settings-field">
-                    <label class="form-label">密钥保存</label>
-                    <div class="form-check mt-1">
-                        <input class="form-check-input" type="checkbox" id="remember-keys-checkbox">
-                        <label class="form-check-label" for="remember-keys-checkbox">记住 API Key（保存到本地）</label>
-                    </div>
-                </div>
+            <div class="settings-hint form-text text-secondary mt-2">
+                Bridge 客户端只负责连接、观察模式和访问令牌。
             </div>
-
-            <div class="settings-hint form-text text-secondary mt-2">默认不保存密钥，仅保留在当前会话。</div>
+            <a
+                id="open-admin-panel-link"
+                class="btn btn-outline-light btn-sm mt-3"
+                href="#"
+                target="_blank"
+                rel="noopener noreferrer"
+            >
+                打开 Admin 页面
+            </a>
             <div id="runtime-config-status" class="settings-hint form-text text-secondary mt-2"></div>
-        </details>
+        </section>
 
         <div class="settings-actions d-flex justify-content-end gap-2 mt-4">
             <button id="cancel-settings-btn" class="settings-btn secondary btn btn-outline-light btn-sm">
                 取消
             </button>
             <button id="save-settings-btn" class="settings-btn primary btn btn-primary btn-sm">
-                保存并应用
+                保存
             </button>
         </div>
     </section>
 
+    <script src="js/config/app-env.js"></script>
     <script src="js/config/storage.js"></script>
     <script src="js/state/app-state.js"></script>
     <script src="js/ui/dom.js"></script>

@@ -1,6 +1,7 @@
 (() => {
     const dom = window.dom;
     const appState = window.appState;
+    const appEnv = window.appEnv || {};
     const storage = window.storage;
     const runtimeConfig = window.runtimeConfig;
     const updateConnectionBadge = window.updateConnectionBadge;
@@ -33,7 +34,9 @@
 
     const connectWebSocket = () => {
         wsClient.connect({
-            getServerAddress: () => appState.connection.serverIp,
+            getServerAddress: () => appState.connection.serverAddress,
+            getAccessToken: () => storage.getAccessToken(),
+            getAdminToken: () => storage.getAdminToken(),
             normalizeServerAddress,
             onWs: (socket) => {
                 window.runtime?.setWs(socket);
@@ -83,9 +86,9 @@
     });
 
     window.runtimeBootstrap.init({
-        getServerAddress: () => appState.connection.serverIp,
+        getServerAddress: () => appState.connection.serverAddress,
         getRuntimeConfig: () => storage.getRuntimeConfig(),
-        hasRuntimeConfig: runtimeConfig.hasRuntimeConfig,
+        hasRuntimeConfig: () => false,
         applyRuntimeConfig: runtimeConfig.applyRuntimeConfig,
         onStatus: (online, text) => updateConnectionBadge(online, text),
         onDone: () => connectWebSocket()

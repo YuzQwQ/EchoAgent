@@ -1,6 +1,6 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from core.agent import EchoAgent
@@ -15,6 +15,7 @@ import json
 import base64
 import re
 import os
+import secrets
 import speech_recognition as sr
 import io
 import cv2
@@ -33,37 +34,157 @@ def _get_allowed_origins():
         "null"
     ]
 
+def _read_env_flag(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+ACCESS_TOKEN = (
+    os.getenv("ECHO_ACCESS_TOKEN")
+    or os.getenv("ECHO_API_TOKEN")
+    or os.getenv("ACCESS_TOKEN")
+)
 ADMIN_TOKEN = os.getenv("ECHO_ADMIN_TOKEN") or os.getenv("ADMIN_TOKEN")
+ALLOWED_ORIGINS = _get_allowed_origins()
+PUBLIC_HEALTH = _read_env_flag("ECHO_PUBLIC_HEALTH", False)
+PUBLIC_UI = _read_env_flag("ECHO_PUBLIC_UI", True)
+WS_TICKET_TTL_SECONDS = int(os.getenv("ECHO_WS_TICKET_TTL_SECONDS", 60))
+WS_TICKET_STORE: dict[str, float] = {}
+
+def _is_loopback_host(host: str | None) -> bool:
+    if not host:
+        return False
+    return host in ("127.0.0.1", "localhost", "::1") or host.startswith("127.")
 
 def _is_loopback(request: Request) -> bool:
     if not request.client:
         return False
-    host = request.client.host or ""
-    return host in ("127.0.0.1", "localhost", "::1") or host.startswith("127.")
+    return _is_loopback_host(request.client.host or "")
 
-def _require_read_access(request: Request, token: str | None):
+def _has_valid_access_token(token: str | None) -> bool:
+    if token and ACCESS_TOKEN and token == ACCESS_TOKEN:
+        return True
+    if token and ADMIN_TOKEN and token == ADMIN_TOKEN:
+        return True
+    return False
+
+def _has_valid_admin_token(token: str | None) -> bool:
+    return bool(token and ADMIN_TOKEN and token == ADMIN_TOKEN)
+
+def _prune_ws_tickets(now_ts: float | None = None):
+    current = now_ts if now_ts is not None else time.time()
+    expired = [ticket for ticket, expiry in WS_TICKET_STORE.items() if expiry <= current]
+    for ticket in expired:
+        WS_TICKET_STORE.pop(ticket, None)
+
+def _issue_ws_ticket() -> tuple[str, int]:
+    _prune_ws_tickets()
+    ticket = secrets.token_urlsafe(24)
+    expiry = time.time() + max(5, WS_TICKET_TTL_SECONDS)
+    WS_TICKET_STORE[ticket] = expiry
+    return ticket, int(expiry)
+
+def _consume_ws_ticket(ticket: str | None) -> bool:
+    if not ticket:
+        return False
+    _prune_ws_tickets()
+    expiry = WS_TICKET_STORE.pop(ticket, None)
+    if expiry is None:
+        return False
+    return expiry > time.time()
+
+def _is_origin_allowed(origin: str | None) -> bool:
+    if not origin:
+        return True
+
+    normalized = origin.strip().rstrip("/")
+    if not normalized:
+        return True
+    if normalized == "null" or normalized.startswith("file://"):
+        return True
+
+    allowed = {item.strip().rstrip("/") for item in ALLOWED_ORIGINS if item.strip()}
+    if "*" in allowed:
+        return True
+    return normalized in allowed
+
+def _require_read_access(request: Request, access_token: str | None, admin_token: str | None):
+    if ACCESS_TOKEN or ADMIN_TOKEN:
+        if _has_valid_access_token(access_token) or _has_valid_admin_token(admin_token):
+            return
+        raise HTTPException(status_code=403, detail="Forbidden")
+    if not _is_loopback(request):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+def _require_write_access(request: Request, admin_token: str | None):
     if ADMIN_TOKEN:
-        if token != ADMIN_TOKEN:
+        if not _has_valid_admin_token(admin_token):
             raise HTTPException(status_code=403, detail="Forbidden")
         return
     if not _is_loopback(request):
         raise HTTPException(status_code=403, detail="Forbidden")
 
-def _require_write_access(request: Request, token: str | None):
-    if ADMIN_TOKEN:
-        if token != ADMIN_TOKEN:
-            raise HTTPException(status_code=403, detail="Forbidden")
-        return
-    if not _is_loopback(request):
-        raise HTTPException(status_code=403, detail="Forbidden")
+async def _require_websocket_access(websocket: WebSocket) -> bool:
+    host = websocket.client.host if websocket.client else ""
+    origin = websocket.headers.get("origin")
+    query_ticket = websocket.query_params.get("ticket")
+    query_access_token = websocket.query_params.get("access_token") or websocket.query_params.get("token")
+    query_admin_token = websocket.query_params.get("admin_token")
+    header_access_token = websocket.headers.get("x-access-token")
+    header_admin_token = websocket.headers.get("x-admin-token")
+
+    if not _is_origin_allowed(origin):
+        await websocket.close(code=1008, reason="Forbidden origin")
+        return False
+
+    if ACCESS_TOKEN or ADMIN_TOKEN:
+        if _consume_ws_ticket(query_ticket):
+            return True
+        if (
+            _has_valid_access_token(query_access_token)
+            or _has_valid_access_token(header_access_token)
+            or _has_valid_admin_token(query_admin_token)
+            or _has_valid_admin_token(header_admin_token)
+        ):
+            return True
+        await websocket.close(code=1008, reason="Forbidden")
+        return False
+
+    if not _is_loopback_host(host):
+        await websocket.close(code=1008, reason="Forbidden")
+        return False
+
+    return True
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=_get_allowed_origins(),
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.middleware("http")
+async def security_middleware(request: Request, call_next):
+    origin = request.headers.get("origin")
+    if not _is_origin_allowed(origin):
+        return JSONResponse(status_code=403, content={"detail": "Forbidden origin"})
+
+    path = request.url.path or "/"
+    access_token = request.headers.get("x-access-token")
+    admin_token = request.headers.get("x-admin-token")
+
+    if path == "/health" and not PUBLIC_HEALTH:
+        try:
+            _require_read_access(request, access_token, admin_token)
+        except HTTPException as exc:
+            return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+
+    if (path == "/" or path.startswith("/ui")) and not PUBLIC_UI and not _is_loopback(request):
+        return JSONResponse(status_code=403, content={"detail": "Remote UI disabled"})
+
+    return await call_next(request)
 
 # 初始化 Agent 和 TTS
 agent = EchoAgent()
@@ -339,6 +460,8 @@ def _apply_runtime_config(update: RuntimeConfigUpdate):
 
 @app.websocket("/ws/chat")
 async def websocket_endpoint(websocket: WebSocket):
+    if not await _require_websocket_access(websocket):
+        return
     await websocket.accept()
     print("WebSocket connected")
     change_detector = ObserverChangeDetector()
@@ -726,10 +849,29 @@ async def tts_worker(websocket: WebSocket, queue: asyncio.Queue, service: TTSSer
 def health_check():
     return {"status": "ok", "model": config.PRIMARY_MODEL_NAME}
 
+@app.post("/auth/ws-ticket")
+def issue_ws_ticket(
+    request: Request,
+    x_access_token: str | None = Header(default=None, alias="X-Access-Token"),
+    x_admin_token: str | None = Header(default=None, alias="X-Admin-Token")
+):
+    _require_read_access(request, x_access_token, x_admin_token)
+    ticket, expires_at = _issue_ws_ticket()
+    return {
+        "ok": True,
+        "ticket": ticket,
+        "expires_at": expires_at,
+        "expires_in": max(5, WS_TICKET_TTL_SECONDS)
+    }
+
 
 @app.get("/runtime-config")
-def get_runtime_config_status(request: Request, x_admin_token: str | None = Header(default=None, alias="X-Admin-Token")):
-    _require_read_access(request, x_admin_token)
+def get_runtime_config_status(
+    request: Request,
+    x_access_token: str | None = Header(default=None, alias="X-Access-Token"),
+    x_admin_token: str | None = Header(default=None, alias="X-Admin-Token")
+):
+    _require_read_access(request, x_access_token, x_admin_token)
     return {
         "primary": {
             "base_url": config.PRIMARY_BASE_URL,

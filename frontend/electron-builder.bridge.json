@@ -1,0 +1,16 @@
+{
+  "appId": "com.echo.bridge",
+  "productName": "Echo Bridge",
+  "directories": {
+    "output": "dist-bridge"
+  },
+  "win": {
+    "target": "nsis",
+    "verifyUpdateCodeSignature": false
+  },
+  "artifactName": "Echo-Bridge-${version}.${ext}",
+  "extraMetadata": {
+    "name": "echo-bridge",
+    "main": "main_bridge.js"
+  }
+}
