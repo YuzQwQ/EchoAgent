@@ -19,6 +19,12 @@ yarn-error.log
 dist/
 build/
 .npm/
+frontend/dist/
+frontend/dist-bridge*/
+frontend/*release*/
+*.exe
+*.asar
+*.blockmap
 
 # IDE settings
 .vscode/

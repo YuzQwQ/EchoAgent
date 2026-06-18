@@ -1,8 +1,8 @@
 from core.tools.base import BaseTool
 from config import config
 import os
-import stat
 import subprocess
+import time
 
 class ProjectHistoryTool(BaseTool):
     def __init__(self):
@@ -112,49 +112,54 @@ class GetCurrentTimeTool(BaseTool):
         weekday = weekday_map[now.weekday()]
         return f"当前时间：{now.strftime('%Y-%m-%d %H:%M:%S')} ({weekday})"
 
-class ClipboardTool(BaseTool):
-    def __init__(self):
-        description = (
-            "【系统剪贴板接口】\n"
-            "必须使用此工具来与用户的剪贴板交互，严禁编造剪贴板内容。\n"
-            "- 读取：当用户询问'剪贴板有什么'、'粘贴'、'看看剪贴板'时，必须调用 action='read'。\n"
-            "- 写入：当用户要求'复制'、'写入剪贴板'时，必须调用 action='write' 并提供 content。"
-        )
-        super().__init__("Clipboard", description)
+class LocalTextToolBase(BaseTool):
+    max_read_chars = 4000
 
-    def execute(self, action: str = "read", content: str = "", **kwargs):
-        import pyperclip
-        try:
-            if action == "read":
-                text = pyperclip.paste()
-                if not text:
-                    return "【剪贴板】内容为空。"
-                # 截断过长内容，避免 Token 爆炸
-                preview = text[:500] + "..." if len(text) > 500 else text
-                return f"【剪贴板内容读取成功】\n{preview}"
-            
-            elif action == "write":
-                if not content:
-                    return "【错误】写入剪贴板需要提供 content 参数。"
-                pyperclip.copy(content)
-                return "【成功】已将内容写入系统剪贴板。"
-            
-            else:
-                return f"【错误】不支持的操作类型：{action}。请使用 'read' 或 'write'。"
-        except Exception as e:
-            return f"【剪贴板操作失败】错误信息：{str(e)}"
-
-class FileTool(BaseTool):
-    def __init__(self):
-        self.project_root = os.path.abspath(config.PROJECT_ROOT)
+    def __init__(self, name: str, description: str):
         self.workspace_root = os.path.abspath(config.WORKSPACE_ROOT)
         os.makedirs(self.workspace_root, exist_ok=True)
+        super().__init__(name, description)
+
+    def _is_within_workspace(self, target_path: str) -> bool:
+        try:
+            return os.path.commonpath([target_path, self.workspace_root]) == self.workspace_root
+        except ValueError:
+            return False
+
+    def _resolve_txt_path(self, path: str) -> str:
+        if not path or not str(path).strip():
+            raise ValueError("缺少文件路径")
+
+        cleaned = str(path).strip().strip('"').strip("'").replace("/", os.sep)
+        if os.path.isabs(cleaned) or os.path.splitdrive(cleaned)[0]:
+            raise ValueError("v0.0.1 仅允许使用相对路径")
+
+        parts = [part for part in cleaned.split(os.sep) if part not in ("", ".")]
+        if not parts or any(part == ".." for part in parts):
+            raise ValueError("路径不能包含 .. 或逃逸工作区")
+
+        filename = parts[-1]
+        root, ext = os.path.splitext(filename)
+        if not root:
+            raise ValueError("缺少有效的文件名")
+        if ext and ext.lower() != ".txt":
+            raise ValueError("v0.0.1 仅支持 .txt 文件")
+        if not ext:
+            parts[-1] = f"{filename}.txt"
+
+        target_path = os.path.abspath(os.path.join(self.workspace_root, *parts))
+        if not self._is_within_workspace(target_path):
+            raise ValueError("路径不在允许的工作区内")
+        return target_path
+
+
+class CreateTextFileTool(LocalTextToolBase):
+    def __init__(self):
         description = (
-            "【文本文件读写工具】\n"
-            f"仅允许在工作区内读写：{self.workspace_root}\n"
-            "操作：read/write/append/create。read 读取文本；write 覆盖写入；append 追加写入；create 创建空文件。"
+            "创建一个新的 .txt 文本文件。仅允许相对路径，文件位于 Echo 工作区内。"
+            "如果未提供 .txt 后缀会自动补齐；文件已存在时不会覆盖。"
         )
-        super().__init__("File", description)
+        super().__init__("create_text_file", description)
 
     def to_dict(self):
         return {
@@ -165,167 +170,318 @@ class FileTool(BaseTool):
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "action": {"type": "string", "description": "read/write/append/create"},
-                        "path": {"type": "string", "description": "File path, absolute or relative to workspace"},
-                        "content": {"type": "string", "description": "Text content for write/append"}
+                        "path": {"type": "string", "description": "相对工作区的 .txt 文件路径"}
                     },
-                    "required": ["action", "path"]
+                    "required": ["path"]
                 }
             }
         }
 
-    def _ensure_writable(self, target_path: str):
+    def execute(self, path: str = "", **kwargs):
         try:
-            os.chmod(self.workspace_root, stat.S_IWRITE | stat.S_IREAD | stat.S_IEXEC)
-        except Exception:
-            pass
-        if os.path.exists(target_path):
-            try:
-                os.chmod(target_path, stat.S_IWRITE | stat.S_IREAD)
-            except Exception:
-                pass
-        parent = os.path.dirname(target_path)
-        if parent and os.path.isdir(parent):
-            try:
-                os.chmod(parent, stat.S_IWRITE | stat.S_IREAD | stat.S_IEXEC)
-            except Exception:
-                pass
-
-    def _fallback_path(self, target_path: str) -> str:
-        fallback_dir = os.path.join(self.workspace_root, "_echo")
-        try:
-            os.makedirs(fallback_dir, exist_ok=True)
-            os.chmod(fallback_dir, stat.S_IWRITE | stat.S_IREAD | stat.S_IEXEC)
-            return os.path.join(fallback_dir, os.path.basename(target_path))
-        except Exception:
-            secondary_root = self.workspace_root
-            try:
-                os.makedirs(secondary_root, exist_ok=True)
-                os.chmod(secondary_root, stat.S_IWRITE | stat.S_IREAD | stat.S_IEXEC)
-            except Exception:
-                pass
-            return os.path.join(secondary_root, os.path.basename(target_path))
-
-    def _is_within_workspace(self, target_path: str, root_path: str) -> bool:
-        try:
-            return os.path.commonpath([target_path, root_path]) == root_path
-        except ValueError:
-            return False
-
-    def _normalize_user_path(self, path: str) -> str:
-        cleaned = path.strip().strip('"').strip("'").replace("/", os.sep)
-        workspace_name = os.path.basename(self.workspace_root.rstrip("\\/"))
-        prefixes = (
-            f"{workspace_name}{os.sep}",
-            f".{os.sep}{workspace_name}{os.sep}",
-        )
-        for prefix in prefixes:
-            if cleaned.lower().startswith(prefix.lower()):
-                cleaned = cleaned[len(prefix):]
-                break
-        return cleaned.lstrip("\\/")
-
-    def _resolve_path(self, path: str) -> str:
-        if not path:
-            raise ValueError("缺少文件路径")
-
-        cleaned = self._normalize_user_path(path)
-        if not cleaned or cleaned == ".":
-            raise ValueError("缺少有效的文件路径")
-
-        if os.path.isabs(cleaned):
-            full_path = os.path.abspath(cleaned)
-            if self._is_within_workspace(full_path, self.workspace_root):
-                return full_path
-            if self._is_within_workspace(full_path, self.project_root):
-                relative_to_project = os.path.relpath(full_path, self.project_root)
-                workspace_name = os.path.basename(self.workspace_root.rstrip("\\/"))
-                if relative_to_project.lower().startswith(f"{workspace_name.lower()}{os.sep}"):
-                    relative_to_project = relative_to_project[len(workspace_name) + 1:]
-                full_path = os.path.abspath(os.path.join(self.workspace_root, relative_to_project))
-            else:
-                raise ValueError(f"路径不在允许的工作区内: {self.workspace_root}")
-        else:
-            full_path = os.path.abspath(os.path.join(self.workspace_root, cleaned))
-
-        if not self._is_within_workspace(full_path, self.workspace_root):
-            raise ValueError(f"路径不在允许的工作区内: {self.workspace_root}")
-        return full_path
-
-    def execute(self, action: str = "read", path: str = "", content: str = "", **kwargs):
-        try:
-            target_path = self._resolve_path(path)
-            def _try_write_write(path_to_use: str, data: str, mode: str):
-                try:
-                    with open(path_to_use, mode, encoding="utf-8") as f:
-                        f.write(data)
-                    return None
-                except PermissionError:
-                    fb = self._fallback_path(path_to_use)
-                    try:
-                        os.makedirs(os.path.dirname(fb), exist_ok=True)
-                        with open(fb, mode, encoding="utf-8") as f:
-                            f.write(data)
-                        return ("fallback", fb)
-                    except Exception as e2:
-                        return ("error", f"原路径：{path_to_use}，回退路径：{fb}，错误：{str(e2)}")
-                except Exception as e:
-                    return ("error", str(e))
-            if action == "read":
-                if not os.path.exists(target_path):
-                    return f"【错误】文件不存在：{target_path}"
-                with open(target_path, "r", encoding="utf-8") as f:
-                    text = f.read()
-                if not text:
-                    return f"【文件读取成功】{target_path}\n【内容为空】"
-                preview = text[:2000] + ("..." if len(text) > 2000 else "")
-                return f"【文件读取成功】{target_path}\n{preview}"
-            if action == "write":
-                parent = os.path.dirname(target_path)
-                if parent and not os.path.isdir(parent):
-                    os.makedirs(parent, exist_ok=True)
-                self._ensure_writable(target_path)
-                result = _try_write_write(target_path, content or "", "w")
-                if result is None:
-                    return f"【文件写入成功】{target_path}"
-                if isinstance(result, tuple) and result[0] == "fallback":
-                    label = "【文件写入成功（回退 _echo）】"
-                    if "_echo_workspace" in result[1]:
-                        label = "【文件写入成功（回退 _echo_workspace）】"
-                    return f"{label}{result[1]}"
-                return f"【权限不足】{result[1]}"
-            if action == "append":
-                parent = os.path.dirname(target_path)
-                if parent and not os.path.isdir(parent):
-                    os.makedirs(parent, exist_ok=True)
-                self._ensure_writable(target_path)
-                result = _try_write_write(target_path, content or "", "a")
-                if result is None:
-                    return f"【文件追加成功】{target_path}"
-                if isinstance(result, tuple) and result[0] == "fallback":
-                    label = "【文件追加成功（回退 _echo）】"
-                    if "_echo_workspace" in result[1]:
-                        label = "【文件追加成功（回退 _echo_workspace）】"
-                    return f"{label}{result[1]}"
-                return f"【权限不足】{result[1]}"
-            if action == "create":
-                parent = os.path.dirname(target_path)
-                if parent and not os.path.isdir(parent):
-                    os.makedirs(parent, exist_ok=True)
-                if os.path.exists(target_path):
-                    return f"【文件已存在】{target_path}"
-                self._ensure_writable(target_path)
-                result = _try_write_write(target_path, "", "w")
-                if result is None:
-                    return f"【文件创建成功】{target_path}"
-                if isinstance(result, tuple) and result[0] == "fallback":
-                    label = "【文件创建成功（回退 _echo）】"
-                    if "_echo_workspace" in result[1]:
-                        label = "【文件创建成功（回退 _echo_workspace）】"
-                    return f"{label}{result[1]}"
-                return f"【权限不足】{result[1]}"
-            return f"【错误】不支持的操作类型：{action}。请使用 read/write/append/create。"
-        except PermissionError as e:
-            return f"【权限不足】{str(e)}"
+            target_path = self._resolve_txt_path(path)
+            if os.path.exists(target_path):
+                return f"【文件已存在】{target_path}"
+            os.makedirs(os.path.dirname(target_path), exist_ok=True)
+            with open(target_path, "x", encoding="utf-8") as f:
+                f.write("")
+            return f"【文本文件创建成功】{target_path}"
         except Exception as e:
-            return f"【文件操作失败】错误信息：{str(e)}"
+            return f"【文本文件创建失败】{str(e)}"
+
+
+class WriteTextFileTool(LocalTextToolBase):
+    def __init__(self):
+        description = (
+            "覆盖写入一个 .txt 文本文件。仅允许相对路径，文件位于 Echo 工作区内。"
+            "如果未提供 .txt 后缀会自动补齐；会创建必要的父目录。"
+        )
+        super().__init__("write_text_file", description)
+
+    def to_dict(self):
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "相对工作区的 .txt 文件路径"},
+                        "content": {"type": "string", "description": "要覆盖写入的文本内容"}
+                    },
+                    "required": ["path", "content"]
+                }
+            }
+        }
+
+    def execute(self, path: str = "", content=None, **kwargs):
+        try:
+            if content is None:
+                return "【文本文件写入失败】缺少 content 参数"
+            target_path = self._resolve_txt_path(path)
+            os.makedirs(os.path.dirname(target_path), exist_ok=True)
+            with open(target_path, "w", encoding="utf-8") as f:
+                f.write(str(content))
+            return f"【文本文件写入成功】{target_path}"
+        except Exception as e:
+            return f"【文本文件写入失败】{str(e)}"
+
+
+class ReadTextFileTool(LocalTextToolBase):
+    def __init__(self):
+        description = "读取 Echo 工作区内的 .txt 文本文件。仅允许相对路径，并限制返回长度。"
+        super().__init__("read_text_file", description)
+
+    def to_dict(self):
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "相对工作区的 .txt 文件路径"}
+                    },
+                    "required": ["path"]
+                }
+            }
+        }
+
+    def execute(self, path: str = "", **kwargs):
+        try:
+            target_path = self._resolve_txt_path(path)
+            if not os.path.exists(target_path):
+                return f"【文本文件读取失败】文件不存在：{target_path}"
+            with open(target_path, "r", encoding="utf-8") as f:
+                text = f.read()
+            if not text:
+                return f"【文本文件读取成功】{target_path}\n【内容为空】"
+            suffix = ""
+            if len(text) > self.max_read_chars:
+                text = text[:self.max_read_chars]
+                suffix = f"\n【内容已截断，仅显示前 {self.max_read_chars} 个字符】"
+            return f"【文本文件读取成功】{target_path}\n{text}{suffix}"
+        except Exception as e:
+            return f"【文本文件读取失败】{str(e)}"
+
+
+class CopyToClipboardTool(BaseTool):
+    def __init__(self):
+        description = "将文本复制到系统剪贴板。必须提供 content，失败时返回真实错误。"
+        super().__init__("copy_to_clipboard", description)
+
+    def to_dict(self):
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "content": {"type": "string", "description": "要复制到剪贴板的文本"}
+                    },
+                    "required": ["content"]
+                }
+            }
+        }
+
+    def execute(self, content=None, **kwargs):
+        try:
+            if content is None:
+                return "【剪贴板写入失败】缺少 content 参数"
+            import pyperclip
+            pyperclip.copy(str(content))
+            return "【剪贴板写入成功】已复制文本内容。"
+        except Exception as e:
+            return f"【剪贴板写入失败】{str(e)}"
+
+
+class ReadClipboardTool(BaseTool):
+    def __init__(self):
+        description = "读取系统剪贴板中的文本内容。失败时返回真实错误，不编造剪贴板内容。"
+        super().__init__("read_clipboard", description)
+
+    def to_dict(self):
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": {
+                    "type": "object",
+                    "properties": {}
+                }
+            }
+        }
+
+    def execute(self, **kwargs):
+        try:
+            import pyperclip
+            text = pyperclip.paste()
+            if not text:
+                return "【剪贴板读取成功】内容为空。"
+            preview = text[:1000] + ("..." if len(text) > 1000 else "")
+            return f"【剪贴板读取成功】\n{preview}"
+        except Exception as e:
+            return f"【剪贴板读取失败】{str(e)}"
+
+
+class ListWindowsTool(BaseTool):
+    def __init__(self):
+        description = "列出 Windows 桌面当前可见窗口标题；可用 filter 按标题关键字过滤。"
+        super().__init__("list_windows", description)
+
+    def to_dict(self):
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "filter": {"type": "string", "description": "窗口标题关键字，可选"}
+                    }
+                }
+            }
+        }
+
+    def _visible_windows(self):
+        import win32gui
+
+        windows = []
+        def enum_callback(hwnd, _):
+            if win32gui.IsWindowVisible(hwnd):
+                title = win32gui.GetWindowText(hwnd).strip()
+                if title:
+                    windows.append(title)
+            return True
+
+        win32gui.EnumWindows(enum_callback, None)
+        return windows
+
+    def execute(self, filter: str = "", **kwargs):
+        try:
+            windows = self._visible_windows()
+            keyword = (filter or "").strip().lower()
+            if keyword:
+                windows = [title for title in windows if keyword in title.lower()]
+            if not windows:
+                if keyword:
+                    return f"【窗口列表】没有找到标题包含“{filter}”的可见窗口。"
+                return "【窗口列表】当前没有可见窗口。"
+            preview = "\n".join(f"{index + 1}. {title}" for index, title in enumerate(windows[:30]))
+            suffix = f"\n共 {len(windows)} 个可见窗口"
+            if len(windows) > 30:
+                suffix = f"\n仅显示前 30 个，共 {len(windows)} 个可见窗口"
+            return f"【窗口列表读取成功】\n{preview}{suffix}"
+        except ImportError:
+            return "【窗口列表读取失败】当前环境不支持窗口枚举（需要 Windows + pywin32）。"
+        except Exception as e:
+            return f"【窗口列表读取失败】{str(e)}"
+
+
+class ScreenshotWindowTool(BaseTool):
+    def __init__(self):
+        self.screenshot_dir = os.path.join(os.path.abspath(config.WORKSPACE_ROOT), "screenshots")
+        description = (
+            "截取指定 Windows 可见窗口并保存为 PNG。必须提供 window_title；"
+            "按标题包含关系匹配第一个可见窗口。v0.0.1 不支持全屏截图。"
+        )
+        super().__init__("screenshot_window", description)
+
+    def to_dict(self):
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "window_title": {"type": "string", "description": "要截图的窗口标题关键字"}
+                    },
+                    "required": ["window_title"]
+                }
+            }
+        }
+
+    def _find_window(self, window_title: str):
+        import win32gui
+
+        matches = []
+        keyword = window_title.strip().lower()
+        def enum_callback(hwnd, _):
+            if win32gui.IsWindowVisible(hwnd):
+                title = win32gui.GetWindowText(hwnd).strip()
+                if title and keyword in title.lower():
+                    matches.append((hwnd, title))
+            return True
+
+        win32gui.EnumWindows(enum_callback, None)
+        return matches[0] if matches else (None, "")
+
+    def execute(self, window_title: str = "", **kwargs):
+        try:
+            title_query = (window_title or "").strip()
+            if not title_query:
+                return "【窗口截图失败】缺少 window_title；v0.0.1 不支持全屏截图。"
+
+            import win32gui
+            import win32ui
+            import win32con
+            from PIL import Image
+
+            hwnd, matched_title = self._find_window(title_query)
+            if not hwnd:
+                return f"【窗口截图失败】未找到标题包含“{window_title}”的可见窗口。"
+
+            left, top, right, bottom = win32gui.GetWindowRect(hwnd)
+            width = right - left
+            height = bottom - top
+            if width <= 0 or height <= 0:
+                return f"【窗口截图失败】窗口尺寸无效：{matched_title}"
+
+            hwnd_dc = win32gui.GetWindowDC(hwnd)
+            mfc_dc = win32ui.CreateDCFromHandle(hwnd_dc)
+            save_dc = mfc_dc.CreateCompatibleDC()
+            bitmap = win32ui.CreateBitmap()
+            bitmap.CreateCompatibleBitmap(mfc_dc, width, height)
+            save_dc.SelectObject(bitmap)
+
+            try:
+                result = win32gui.PrintWindow(hwnd, save_dc.GetSafeHdc(), 3)
+                if result != 1:
+                    result = win32gui.PrintWindow(hwnd, save_dc.GetSafeHdc(), 0)
+                if result != 1:
+                    return f"【窗口截图失败】系统未能捕获窗口：{matched_title}"
+
+                bmpinfo = bitmap.GetInfo()
+                bmpstr = bitmap.GetBitmapBits(True)
+                image = Image.frombuffer(
+                    "RGB",
+                    (bmpinfo["bmWidth"], bmpinfo["bmHeight"]),
+                    bmpstr,
+                    "raw",
+                    "BGRX",
+                    0,
+                    1,
+                )
+                os.makedirs(self.screenshot_dir, exist_ok=True)
+                safe_title = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in matched_title)[:60]
+                filename = f"{time.strftime('%Y%m%d_%H%M%S')}_{safe_title}.png"
+                output_path = os.path.abspath(os.path.join(self.screenshot_dir, filename))
+                image.save(output_path, "PNG")
+                return f"【窗口截图成功】{matched_title}\n保存路径：{output_path}"
+            finally:
+                win32gui.DeleteObject(bitmap.GetHandle())
+                save_dc.DeleteDC()
+                mfc_dc.DeleteDC()
+                win32gui.ReleaseDC(hwnd, hwnd_dc)
+        except ImportError:
+            return "【窗口截图失败】当前环境不支持窗口截图（需要 Windows + pywin32 + Pillow）。"
+        except Exception as e:
+            return f"【窗口截图失败】{str(e)}"

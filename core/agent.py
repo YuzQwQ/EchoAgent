@@ -39,8 +39,13 @@ class EchoAgent:
             SystemSelfAwarenessTool,
             ProjectHistoryTool,
             GetCurrentTimeTool,
-            ClipboardTool,
-            FileTool
+            CreateTextFileTool,
+            WriteTextFileTool,
+            ReadTextFileTool,
+            CopyToClipboardTool,
+            ReadClipboardTool,
+            ListWindowsTool,
+            ScreenshotWindowTool
         )
         self.tools.register(VisionCapabilityTool())
         self.tools.register(TTSCapabilityTool())
@@ -48,8 +53,13 @@ class EchoAgent:
         self.tools.register(SystemSelfAwarenessTool())
         self.tools.register(ProjectHistoryTool())
         self.tools.register(GetCurrentTimeTool())
-        self.tools.register(ClipboardTool())
-        self.tools.register(FileTool())
+        self.tools.register(CreateTextFileTool())
+        self.tools.register(WriteTextFileTool())
+        self.tools.register(ReadTextFileTool())
+        self.tools.register(CopyToClipboardTool())
+        self.tools.register(ReadClipboardTool())
+        self.tools.register(ListWindowsTool())
+        self.tools.register(ScreenshotWindowTool())
 
     def add_observation_to_context(self, observation: str):
         """
@@ -529,6 +539,25 @@ class EchoAgent:
             or "copy" in lower_input
             or "paste" in lower_input
         )
+        window_markers = (
+            "窗口" in user_input
+            or "截屏" in user_input
+            or "截图" in user_input
+            or "window" in lower_input
+            or "screenshot" in lower_input
+            or "screen shot" in lower_input
+        )
+        window_actions = (
+            "列出" in user_input
+            or "当前窗口" in user_input
+            or "有哪些窗口" in user_input
+            or "截屏" in user_input
+            or "截图" in user_input
+            or "list window" in lower_input
+            or "list windows" in lower_input
+            or "screenshot window" in lower_input
+            or "capture window" in lower_input
+        )
         time_markers = (
             "时间" in user_input
             or "几点" in user_input
@@ -550,6 +579,8 @@ class EchoAgent:
             return {"category": "file", "force": True, "direct_return": True}
         if clipboard_markers:
             return {"category": "clipboard", "force": True, "direct_return": True}
+        if window_markers and window_actions:
+            return {"category": "window", "force": True, "direct_return": True}
         if time_markers:
             return {"category": "time", "force": True, "direct_return": True}
         if history_markers:
@@ -561,14 +592,17 @@ class EchoAgent:
             "你可以调用系统工具来读取事实或执行操作。\n"
             "涉及文件、剪贴板、时间、项目历史时，必须优先调用对应工具，不能臆造结果。\n"
             "如果没有真实工具返回，绝不能声称“已写入”“已创建”“已复制”或给出虚构路径。\n"
-            "File 工具的 path 必须是用户明确提到的文件名或路径；相对路径默认位于 _echo_workspace 下。\n"
+            "文本文件工具仅支持 _echo_workspace 内的相对 .txt 路径；不能访问绝对路径、上级目录或非 .txt 文件。\n"
+            "窗口截图工具必须有明确 window_title；v0.0.1 不支持全屏截图。\n"
             "如果用户没有给出完成操作所需的最小信息，就不要猜，直接简短说明缺少什么。"
         )
         category = intent.get("category")
         if category == "file":
-            prompt += "\n本轮优先判断是否需要调用 File 工具。"
+            prompt += "\n本轮优先判断是否需要调用 create_text_file、write_text_file 或 read_text_file。"
         elif category == "clipboard":
-            prompt += "\n本轮优先判断是否需要调用 Clipboard 工具。"
+            prompt += "\n本轮优先判断是否需要调用 copy_to_clipboard 或 read_clipboard。"
+        elif category == "window":
+            prompt += "\n本轮优先判断是否需要调用 list_windows 或 screenshot_window。"
         elif category == "time":
             prompt += "\n本轮优先判断是否需要调用 GetCurrentTime 工具。"
         elif category == "history":
@@ -583,11 +617,18 @@ class EchoAgent:
 
         executed = executed_tools[0]
         tool_name = executed.get("tool")
-        kwargs = executed.get("kwargs") or {}
-        action = kwargs.get("action")
-        if tool_name == "File" and action not in {"read", "write", "append", "create"}:
-            return None
-        if tool_name not in {"File", "Clipboard", "GetCurrentTime", "ProjectHistory"}:
+        direct_tools = {
+            "create_text_file",
+            "write_text_file",
+            "read_text_file",
+            "copy_to_clipboard",
+            "read_clipboard",
+            "list_windows",
+            "screenshot_window",
+            "GetCurrentTime",
+            "ProjectHistory",
+        }
+        if tool_name not in direct_tools:
             return None
         return str(executed.get("result", ""))
 

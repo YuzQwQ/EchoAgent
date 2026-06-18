@@ -11,3 +11,6 @@ SpeechRecognition
 httpx
 opencv-python
 numpy
+pyperclip
+pywin32
+Pillow
