@@ -98,11 +98,12 @@ def _is_origin_allowed(origin: str | None) -> bool:
     if not origin:
         return True
 
-    normalized = origin.strip().rstrip("/")
-    if not normalized:
+    raw = origin.strip()
+    if not raw:
         return True
-    if normalized == "null" or normalized.startswith("file://"):
+    if raw == "null" or raw.startswith("file:"):
         return True
+    normalized = raw.rstrip("/")
 
     allowed = {item.strip().rstrip("/") for item in ALLOWED_ORIGINS if item.strip()}
     if "*" in allowed:

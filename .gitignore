@@ -21,6 +21,7 @@ build/
 .npm/
 frontend/dist/
 frontend/dist-bridge*/
+frontend/dist-launcher*/
 frontend/*release*/
 *.exe
 *.asar

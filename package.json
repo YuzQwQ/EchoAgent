@@ -6,6 +6,8 @@
   "scripts": {
     "frontend:install": "cd frontend && npm install",
     "frontend:start": "cd frontend && npm start",
+    "launcher:start": "cd frontend && npm run start:launcher",
+    "launcher:build": "cd frontend && npm run dist:launcher",
     "frontend:build": "cd frontend && npm run dist",
     "backend:install": "pip install -r requirements.txt",
     "backend:start": "python api_server.py",

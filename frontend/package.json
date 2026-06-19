@@ -4,10 +4,12 @@
   "main": "main.js",
   "scripts": {
     "start": "npm run start:desktop",
-    "start:desktop": "electron .",
-    "start:bridge": "electron main_bridge.js",
+    "start:desktop": "set ELECTRON_RUN_AS_NODE=& electron .",
+    "start:launcher": "set ELECTRON_RUN_AS_NODE=& electron main_launcher.js",
+    "start:bridge": "set ELECTRON_RUN_AS_NODE=& electron main_bridge.js",
     "dist": "npm run dist:desktop",
     "dist:desktop": "electron-builder",
+    "dist:launcher": "electron-builder --config electron-builder.launcher.json",
     "dist:bridge": "electron-builder --config electron-builder.bridge.json"
   },
   "build": {

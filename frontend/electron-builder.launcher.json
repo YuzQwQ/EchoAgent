@@ -1,0 +1,40 @@
+{
+  "appId": "com.echo.launcher",
+  "productName": "Echo",
+  "directories": {
+    "output": "dist-launcher"
+  },
+  "win": {
+    "target": "dir",
+    "signAndEditExecutable": false,
+    "verifyUpdateCodeSignature": false
+  },
+  "artifactName": "Echo-${version}.${ext}",
+  "extraMetadata": {
+    "name": "echo-launcher",
+    "main": "main_launcher.js"
+  },
+  "extraResources": [
+    {
+      "from": "../api_server.py",
+      "to": "backend/api_server.py"
+    },
+    {
+      "from": "../config.py",
+      "to": "backend/config.py"
+    },
+    {
+      "from": "../requirements.txt",
+      "to": "backend/requirements.txt"
+    },
+    {
+      "from": "../core",
+      "to": "backend/core",
+      "filter": [
+        "**/*",
+        "!**/__pycache__/**",
+        "!**/*.pyc"
+      ]
+    }
+  ]
+}

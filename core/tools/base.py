@@ -34,7 +34,7 @@ class ToolRegistry:
 
     def register(self, tool: BaseTool):
         self._tools[tool.name] = tool
-        print(f"🔧 Tool Registered: {tool.name}")
+        print(f"Tool Registered: {tool.name}")
 
     def get_tool(self, name: str) -> Optional[BaseTool]:
         return self._tools.get(name)
