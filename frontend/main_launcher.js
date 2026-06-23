@@ -71,10 +71,7 @@ function resolvePythonCommand() {
     return process.env.ECHO_PYTHON || process.env.PYTHON || 'python';
 }
 
-function getWorkspaceRoot(backendRoot) {
-    if (process.env.ECHO_WORKSPACE_ROOT) {
-        return process.env.ECHO_WORKSPACE_ROOT;
-    }
+function getDefaultWorkspaceRoot(backendRoot) {
     if (app.isPackaged) {
         return path.join(app.getPath('userData'), '_echo_workspace');
     }
@@ -109,13 +106,16 @@ async function waitForHealth(timeoutMs) {
 
 function startBackend(backendRoot) {
     const pythonCommand = resolvePythonCommand();
-    const workspaceRoot = getWorkspaceRoot(backendRoot);
-    fs.mkdirSync(workspaceRoot, { recursive: true });
+    const defaultWorkspaceRoot = getDefaultWorkspaceRoot(backendRoot);
+    const runtimeConfigFile = path.join(app.getPath('userData'), 'runtime-config.json');
+    fs.mkdirSync(defaultWorkspaceRoot, { recursive: true });
+    fs.mkdirSync(path.dirname(runtimeConfigFile), { recursive: true });
 
     const env = {
         ...process.env,
         ECHO_PROJECT_ROOT: backendRoot,
-        ECHO_WORKSPACE_ROOT: workspaceRoot,
+        ECHO_RUNTIME_CONFIG_FILE: runtimeConfigFile,
+        ECHO_DEFAULT_WORKSPACE_ROOT: defaultWorkspaceRoot,
         ECHO_RELOAD: '0',
         PYTHONUTF8: '1',
         PYTHONIOENCODING: 'utf-8',

@@ -195,6 +195,7 @@ class WriteTextFileTool(LocalTextToolBase):
         description = (
             "覆盖写入一个 .txt 文本文件。仅允许相对路径，文件位于 Echo 工作区内。"
             "如果未提供 .txt 后缀会自动补齐；会创建必要的父目录。"
+            "仅在需要替换整个文件内容时使用；不要用于追加内容。"
         )
         super().__init__("write_text_file", description)
 
@@ -228,9 +229,59 @@ class WriteTextFileTool(LocalTextToolBase):
             return f"【文本文件写入失败】{str(e)}"
 
 
+class AppendTextFileTool(LocalTextToolBase):
+    def __init__(self):
+        description = (
+            "追加写入一个 .txt 文本文件。仅允许相对路径，文件位于 Echo 工作区内。"
+            "如果未提供 .txt 后缀会自动补齐；文件不存在时会创建；已有内容末尾没有换行时会先补换行。"
+            "用于在保留原有内容的前提下新增内容；用户要求加入、补充、追加内容时使用。"
+        )
+        super().__init__("append_text_file", description)
+
+    def to_dict(self):
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "相对工作区的 .txt 文件路径"},
+                        "content": {"type": "string", "description": "要追加写入的文本内容"}
+                    },
+                    "required": ["path", "content"]
+                }
+            }
+        }
+
+    def execute(self, path: str = "", content=None, **kwargs):
+        try:
+            if content is None:
+                return "【文本文件追加失败】缺少 content 参数"
+            target_path = self._resolve_txt_path(path)
+            os.makedirs(os.path.dirname(target_path), exist_ok=True)
+            text = str(content)
+            needs_leading_newline = False
+            if os.path.exists(target_path) and os.path.getsize(target_path) > 0:
+                with open(target_path, "rb") as f:
+                    f.seek(-1, os.SEEK_END)
+                    needs_leading_newline = f.read(1) not in (b"\n", b"\r")
+            with open(target_path, "a", encoding="utf-8") as f:
+                if needs_leading_newline:
+                    f.write("\n")
+                f.write(text)
+            return f"【文本文件追加成功】{target_path}"
+        except Exception as e:
+            return f"【文本文件追加失败】{str(e)}"
+
+
 class ReadTextFileTool(LocalTextToolBase):
     def __init__(self):
-        description = "读取 Echo 工作区内的 .txt 文本文件。仅允许相对路径，并限制返回长度。"
+        description = (
+            "读取 Echo 工作区内的 .txt 文本文件。仅允许相对路径，并限制返回长度。"
+            "此工具只查看内容，不会创建、写入或追加文件。"
+        )
         super().__init__("read_text_file", description)
 
     def to_dict(self):

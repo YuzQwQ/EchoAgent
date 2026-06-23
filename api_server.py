@@ -7,7 +7,7 @@ from core.agent import EchoAgent
 from core.tts_service import TTSService
 from core.vision_service import VisionService
 from core.llm_service import LLMService
-from config import config
+from config import config, refresh_workspace_paths, save_runtime_config_values
 from openai import OpenAI
 import uvicorn
 import asyncio
@@ -422,11 +422,42 @@ class RuntimeConfigUpdate(BaseModel):
     vision_api_key: str | None = None
     vision_base_url: str | None = None
     vision_model_name: str | None = None
+    workspace_root: str | None = None
+
+
+def _normalize_workspace_root(workspace_root: str) -> str:
+    cleaned = (workspace_root or "").strip()
+    if not cleaned:
+        raise HTTPException(status_code=400, detail="workspace_root is required")
+    expanded = os.path.abspath(os.path.expanduser(cleaned))
+    if os.path.exists(expanded) and not os.path.isdir(expanded):
+        raise HTTPException(status_code=400, detail="workspace_root must be a directory")
+    try:
+        os.makedirs(expanded, exist_ok=True)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"failed to create workspace_root: {e}")
+    return expanded
+
+
+def _apply_workspace_root(workspace_root: str | None):
+    if workspace_root is None:
+        return None
+    normalized = _normalize_workspace_root(workspace_root)
+    previous = os.path.abspath(config.WORKSPACE_ROOT)
+    save_runtime_config_values({"workspace_root": normalized})
+    refresh_workspace_paths(normalized)
+    os.environ["ECHO_WORKSPACE_ROOT"] = normalized
+    agent.refresh_runtime_resources()
+    return normalized if normalized != previous else None
 
 
 def _apply_runtime_config(update: RuntimeConfigUpdate):
     """应用运行时模型配置，并重建相关服务实例。"""
     changed = []
+
+    workspace_changed = _apply_workspace_root(update.workspace_root)
+    if workspace_changed:
+        changed.append("WORKSPACE_ROOT")
 
     def set_if_present(value: str | None, attr_name: str, env_name: str):
         if value is None:
@@ -883,6 +914,9 @@ def get_runtime_config_status(
             "base_url": config.VISION_MODEL_BASE_URL,
             "model": config.VISION_MODEL,
             "api_key_set": bool(config.VISION_MODEL_API_KEY)
+        },
+        "workspace": {
+            "root": config.WORKSPACE_ROOT
         }
     }
 
@@ -896,7 +930,8 @@ def update_runtime_config(update: RuntimeConfigUpdate, request: Request, x_admin
         "changed": changed,
         "active": {
             "primary_model": config.PRIMARY_MODEL_NAME,
-            "vision_model": config.VISION_MODEL
+            "vision_model": config.VISION_MODEL,
+            "workspace_root": config.WORKSPACE_ROOT
         }
     }
 

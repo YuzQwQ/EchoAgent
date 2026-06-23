@@ -138,7 +138,8 @@
             ['primary_model_name', runtimeConfig.primary_model_name],
             ['vision_api_key', runtimeConfig.vision_api_key],
             ['vision_base_url', runtimeConfig.vision_base_url],
-            ['vision_model_name', runtimeConfig.vision_model_name]
+            ['vision_model_name', runtimeConfig.vision_model_name],
+            ['workspace_root', runtimeConfig.workspace_root]
         ];
         for (const [key, value] of mappings) {
             const cleaned = (value || '').trim();

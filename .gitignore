@@ -41,6 +41,7 @@ _echo_workspace/
 test.txt
 
 # Project Data (Privacy)
+.echo_runtime_config.json
 conversation.json
 *.log
 

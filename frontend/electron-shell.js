@@ -1,4 +1,4 @@
-const { app, BrowserWindow, screen, ipcMain, desktopCapturer } = require('electron');
+const { app, BrowserWindow, screen, ipcMain, desktopCapturer, dialog } = require('electron');
 
 let mainWindow = null;
 let motionWindow = null;
@@ -50,6 +50,22 @@ function installIpcHandlers() {
             return source ? source.id : null;
         } catch (error) {
             console.error('Failed to get screen sources:', error);
+            return null;
+        }
+    });
+
+    ipcMain.handle('select-workspace-directory', async () => {
+        try {
+            const result = await dialog.showOpenDialog(mainWindow || undefined, {
+                title: '选择工作目录',
+                properties: ['openDirectory', 'createDirectory'],
+            });
+            if (result.canceled) {
+                return null;
+            }
+            return result.filePaths?.[0] || null;
+        } catch (error) {
+            console.error('Failed to select workspace directory:', error);
             return null;
         }
     });

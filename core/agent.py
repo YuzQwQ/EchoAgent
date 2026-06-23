@@ -41,6 +41,7 @@ class EchoAgent:
             GetCurrentTimeTool,
             CreateTextFileTool,
             WriteTextFileTool,
+            AppendTextFileTool,
             ReadTextFileTool,
             CopyToClipboardTool,
             ReadClipboardTool,
@@ -55,11 +56,22 @@ class EchoAgent:
         self.tools.register(GetCurrentTimeTool())
         self.tools.register(CreateTextFileTool())
         self.tools.register(WriteTextFileTool())
+        self.tools.register(AppendTextFileTool())
         self.tools.register(ReadTextFileTool())
         self.tools.register(CopyToClipboardTool())
         self.tools.register(ReadClipboardTool())
         self.tools.register(ListWindowsTool())
         self.tools.register(ScreenshotWindowTool())
+
+    def refresh_runtime_resources(self):
+        """Rebuild workspace-bound resources after runtime config changes."""
+        try:
+            self.memory.flush()
+        except Exception:
+            pass
+        self.memory = MemoryManager()
+        self.tools = ToolRegistry()
+        self._register_core_tools()
 
     def add_observation_to_context(self, observation: str):
         """
@@ -504,133 +516,27 @@ class EchoAgent:
         thread.daemon = True # 设置为守护线程，防止阻塞主程序退出
         thread.start()
 
-    def _analyze_tool_intent(self, user_input: str) -> Dict[str, Any]:
-        import re
-
-        lower_input = user_input.lower()
-        file_markers = (
-            "文件" in user_input
-            or "文档" in user_input
-            or "文本" in user_input
-            or "file" in lower_input
-            or bool(re.search(r"[A-Za-z]:\\", user_input))
-            or any(ext in lower_input for ext in [".txt", ".md", ".json", ".log", ".csv", ".yaml", ".yml"])
-        )
-        file_actions = (
-            "读取" in user_input
-            or "打开" in user_input
-            or "查看" in user_input
-            or "写入" in user_input
-            or "写到" in user_input
-            or "追加" in user_input
-            or "创建" in user_input
-            or "新建" in user_input
-            or "read file" in lower_input
-            or "open file" in lower_input
-            or "write file" in lower_input
-            or "append file" in lower_input
-            or "create file" in lower_input
-            or "save file" in lower_input
-        )
-        clipboard_markers = (
-            "剪贴板" in user_input
-            or "粘贴" in user_input
-            or "clipboard" in lower_input
-            or "copy" in lower_input
-            or "paste" in lower_input
-        )
-        window_markers = (
-            "窗口" in user_input
-            or "截屏" in user_input
-            or "截图" in user_input
-            or "window" in lower_input
-            or "screenshot" in lower_input
-            or "screen shot" in lower_input
-        )
-        window_actions = (
-            "列出" in user_input
-            or "当前窗口" in user_input
-            or "有哪些窗口" in user_input
-            or "截屏" in user_input
-            or "截图" in user_input
-            or "list window" in lower_input
-            or "list windows" in lower_input
-            or "screenshot window" in lower_input
-            or "capture window" in lower_input
-        )
-        time_markers = (
-            "时间" in user_input
-            or "几点" in user_input
-            or "日期" in user_input
-            or "今天" in user_input
-            or "现在" in user_input
-            or "what time" in lower_input
-            or "date" in lower_input
-        )
-        history_markers = (
-            "项目历史" in user_input
-            or "最近更新" in user_input
-            or "更新记录" in user_input
-            or "git log" in lower_input
-            or "project history" in lower_input
+    def _build_tool_selection_prompt(self) -> str:
+        return (
+            "【工具选择规则】\n"
+            "只使用已注册工具的 canonical name，不要创造工具名或使用别名。\n"
+            "create_text_file：只用于创建新的空 .txt 文件。\n"
+            "write_text_file：用于覆盖写入 .txt 文件，会替换原有内容。\n"
+            "append_text_file：用于把新内容追加到 .txt 文件末尾；文件不存在时也可以创建。\n"
+            "read_text_file：只用于读取或查看文件内容。\n"
+            "不要用 read_text_file 代替 write_text_file 或 append_text_file；用户要求新增、加入、补充、追加内容时，应选择 append_text_file。\n"
+            "如果缺少工具必需参数，返回普通文本询问用户，不要调用参数不完整的工具。"
         )
 
-        if file_markers and file_actions:
-            return {"category": "file", "force": True, "direct_return": True}
-        if clipboard_markers:
-            return {"category": "clipboard", "force": True, "direct_return": True}
-        if window_markers and window_actions:
-            return {"category": "window", "force": True, "direct_return": True}
-        if time_markers:
-            return {"category": "time", "force": True, "direct_return": True}
-        if history_markers:
-            return {"category": "history", "force": True, "direct_return": True}
-        return {"category": None, "force": False, "direct_return": False}
-
-    def _build_tool_call_prompt(self, intent: Dict[str, Any]) -> str:
-        prompt = (
-            "你可以调用系统工具来读取事实或执行操作。\n"
-            "涉及文件、剪贴板、时间、项目历史时，必须优先调用对应工具，不能臆造结果。\n"
-            "如果没有真实工具返回，绝不能声称“已写入”“已创建”“已复制”或给出虚构路径。\n"
-            "文本文件工具仅支持 _echo_workspace 内的相对 .txt 路径；不能访问绝对路径、上级目录或非 .txt 文件。\n"
-            "窗口截图工具必须有明确 window_title；v0.0.1 不支持全屏截图。\n"
-            "如果用户没有给出完成操作所需的最小信息，就不要猜，直接简短说明缺少什么。"
+    def _build_post_tool_response_prompt(self) -> str:
+        return (
+            "【工具结果回复规则】\n"
+            "工具已经执行完毕。接下来请基于工具返回的真实结果，用 Echo 的正常聊天语气回复用户。\n"
+            "不要逐字照搬工具返回的方括号状态标签，也不要像系统日志广播。"
+            "成功时简短确认做了什么，必要时自然带上路径、文件名或读取到的内容；"
+            "失败时说明失败原因或缺少什么参数。"
+            "严禁声称工具结果之外的事情已经发生。"
         )
-        category = intent.get("category")
-        if category == "file":
-            prompt += "\n本轮优先判断是否需要调用 create_text_file、write_text_file 或 read_text_file。"
-        elif category == "clipboard":
-            prompt += "\n本轮优先判断是否需要调用 copy_to_clipboard 或 read_clipboard。"
-        elif category == "window":
-            prompt += "\n本轮优先判断是否需要调用 list_windows 或 screenshot_window。"
-        elif category == "time":
-            prompt += "\n本轮优先判断是否需要调用 GetCurrentTime 工具。"
-        elif category == "history":
-            prompt += "\n本轮优先判断是否需要调用 ProjectHistory 工具。"
-        return prompt
-
-    def _should_return_tool_directly(self, intent: Dict[str, Any], executed_tools: list) -> Optional[str]:
-        if not intent.get("direct_return"):
-            return None
-        if len(executed_tools) != 1:
-            return None
-
-        executed = executed_tools[0]
-        tool_name = executed.get("tool")
-        direct_tools = {
-            "create_text_file",
-            "write_text_file",
-            "read_text_file",
-            "copy_to_clipboard",
-            "read_clipboard",
-            "list_windows",
-            "screenshot_window",
-            "GetCurrentTime",
-            "ProjectHistory",
-        }
-        if tool_name not in direct_tools:
-            return None
-        return str(executed.get("result", ""))
 
     def chat(self, user_input: str, allow_behavior_memory: bool = True, allow_l0: bool = False) -> Generator[str, None, None]:
         """
@@ -650,7 +556,6 @@ class EchoAgent:
             self.memory.add_l2_event(event, max_items=self.l2_max_items)
 
         context = self.memory.get_context()
-        lower_input = user_input.lower()
 
         behavior_prompt = self._build_layered_memory_prompt(user_input, allow_behavior_memory, allow_l0=allow_l0)
         if behavior_prompt:
@@ -700,25 +605,17 @@ class EchoAgent:
                 else:
                     context.append(rag_msg)
 
-        tool_info = self._run_tool_calls(context, user_input)
+        tool_info = self._run_tool_loop(context)
         if tool_info:
-            print(f"[trace:{trace_id}] tool_check rule={tool_info.get('rule')} llm={tool_info.get('llm')} tool_calls={tool_info.get('tool_calls')}")
-            direct_result = tool_info.get("direct_result")
-            if direct_result is not None:
-                self.memory.add_message("assistant", str(direct_result))
+            print(f"[trace:{trace_id}] tool_check tool_calls={tool_info.get('tool_calls')}")
+            text_response = tool_info.get("text_response")
+            if text_response is not None:
+                text_response = self._clean_non_stream_response(str(text_response))
+                self.memory.add_message("assistant", text_response)
                 self._run_async_summary()
                 elapsed_ms = int((time.monotonic() - start_time) * 1000)
-                print(f"[trace:{trace_id}] chat_end elapsed_ms={elapsed_ms} response_chars={len(str(direct_result))}")
-                yield str(direct_result)
-                return
-
-            blocked_reason = tool_info.get("blocked_reason")
-            if blocked_reason:
-                self.memory.add_message("assistant", str(blocked_reason))
-                self._run_async_summary()
-                elapsed_ms = int((time.monotonic() - start_time) * 1000)
-                print(f"[trace:{trace_id}] chat_end elapsed_ms={elapsed_ms} response_chars={len(str(blocked_reason))}")
-                yield str(blocked_reason)
+                print(f"[trace:{trace_id}] chat_end elapsed_ms={elapsed_ms} response_chars={len(text_response)}")
+                yield text_response
                 return
 
         final_response = yield from self._process_stream_response(context, trace_id=trace_id)
@@ -1037,21 +934,11 @@ class EchoAgent:
             print(f"Proactive chat error: {e}")
             return
 
-    def _should_call_tool_by_llm(self, user_input: str, tools_schema):
-        judge_prompt = [
-            {"role": "system", "content": "你是工具调用裁决器，只回答 YES 或 NO。"},
-            {"role": "user", "content": f"用户输入：{user_input}\n如果需要调用任何工具来获取事实信息或执行操作，回答 YES，否则回答 NO。"}
-        ]
-        try:
-            response = self.llm.chat_completion(judge_prompt)
-            return "YES" in (response or "").upper()
-        except Exception as e:
-            print(f"Tool judge failed: {e}")
-            return False
-
     def _parse_tool_arguments(self, raw_arguments: str):
         if raw_arguments is None:
             return None, "Tool arguments missing"
+        if isinstance(raw_arguments, dict):
+            return raw_arguments, None
         try:
             import json
             return json.loads(raw_arguments), None
@@ -1068,111 +955,213 @@ class EchoAgent:
         except Exception as e:
             return None, f"Invalid tool arguments: {str(e)}"
 
-    def _run_tool_calls(self, context, user_input: str):
+    def _clean_non_stream_response(self, text: str) -> str:
+        import re
+        if not text:
+            return ""
+        if "<response>" in text:
+            text = text.split("<response>", 1)[1]
+            if "</response>" in text:
+                text = text.split("</response>", 1)[0]
+        text = re.sub(r"<thought>.*?</thought>", "", text, flags=re.DOTALL)
+        return self._clean_content(text).strip()
+
+    def _tool_call_to_dict(self, tool_call) -> Dict[str, Any]:
+        function = getattr(tool_call, "function", None)
+        return {
+            "id": getattr(tool_call, "id", ""),
+            "type": getattr(tool_call, "type", "function"),
+            "function": {
+                "name": getattr(function, "name", "") if function is not None else "",
+                "arguments": getattr(function, "arguments", "") if function is not None else "",
+            }
+        }
+
+    def _assistant_tool_call_message(self, tool_call_result, tool_calls: list) -> Dict[str, Any]:
+        content = getattr(tool_call_result, "content", None)
+        return {
+            "role": "assistant",
+            "content": content,
+            "tool_calls": [self._tool_call_to_dict(tool_call) for tool_call in tool_calls],
+        }
+
+    def _tool_action(self, tool_name: str) -> str:
+        actions = {
+            "create_text_file": "create",
+            "write_text_file": "write",
+            "append_text_file": "append",
+            "read_text_file": "read",
+            "copy_to_clipboard": "copy",
+            "read_clipboard": "read",
+            "list_windows": "list",
+            "screenshot_window": "screenshot",
+            "GetCurrentTime": "read",
+            "ProjectHistory": "read",
+        }
+        return actions.get(tool_name, "execute")
+
+    def _classify_tool_error(self, message: str) -> str:
+        if "缺少" in message:
+            return "missing_argument"
+        if "不存在" in message:
+            return "not_found"
+        if "路径" in message or ".txt" in message or "相对" in message or "逃逸" in message:
+            return "invalid_path"
+        if "Invalid tool arguments" in message or "arguments" in message:
+            return "invalid_arguments"
+        return "tool_failure"
+
+    def _extract_tool_path(self, result: str, kwargs: Optional[Dict[str, Any]]) -> Optional[str]:
+        if isinstance(result, str) and "】" in result:
+            remainder = result.split("】", 1)[1].strip()
+            first_line = remainder.splitlines()[0].strip() if remainder else ""
+            if first_line and not first_line.startswith("【") and (":\\" in first_line or first_line.endswith(".txt") or first_line.endswith(".png")):
+                return first_line
+        if kwargs:
+            path = kwargs.get("path") or kwargs.get("window_title")
+            if path:
+                return str(path)
+        return None
+
+    def _content_preview(self, tool_name: str, result: str, kwargs: Optional[Dict[str, Any]]) -> Optional[str]:
+        preview = None
+        if tool_name == "read_text_file" and isinstance(result, str) and "\n" in result:
+            preview = result.split("\n", 1)[1].strip()
+            if preview.startswith("【内容为空】"):
+                preview = ""
+        elif kwargs and "content" in kwargs:
+            preview = str(kwargs.get("content") or "")
+        if preview is None:
+            return None
+        if len(preview) > 500:
+            return preview[:500] + "..."
+        return preview
+
+    def _build_tool_payload(
+        self,
+        tool_name: str,
+        kwargs: Optional[Dict[str, Any]],
+        result,
+        ok: bool,
+        error_type: Optional[str] = None
+    ) -> Dict[str, Any]:
+        message = str(result)
+        payload = {
+            "ok": ok,
+            "tool": tool_name,
+            "action": self._tool_action(tool_name),
+            "message": message,
+        }
+        path = self._extract_tool_path(message, kwargs)
+        if path:
+            payload["path"] = path
+        preview = self._content_preview(tool_name, message, kwargs)
+        if preview is not None:
+            payload["content_preview"] = preview
+        if not ok:
+            payload["error_type"] = error_type or self._classify_tool_error(message)
+        return payload
+
+    def _run_tool_calls(self, context, user_input: str = ""):
+        return self._run_tool_loop(context)
+
+    def _run_tool_loop(self, context, max_tool_rounds: int = 5):
         tools_schema = [t.to_dict() for t in self.tools.get_all_tools()]
         if not tools_schema:
             return None
 
-        intent = self._analyze_tool_intent(user_input)
-        should_try_tool_call = intent.get("force", False)
-        llm_judged = False
-        if not should_try_tool_call:
-            llm_judged = self._should_call_tool_by_llm(user_input, tools_schema)
-        if not should_try_tool_call and not llm_judged:
-            return {"rule": False, "llm": False, "tool_calls": 0, "executed_tools": []}
-
-        tool_context = copy.deepcopy(context)
-        tool_prompt = {"role": "system", "content": self._build_tool_call_prompt(intent)}
-        if tool_context and tool_context[-1]["role"] == "user":
-            tool_context.insert(-1, tool_prompt)
+        tool_context = context
+        tool_selection_prompt = {"role": "system", "content": self._build_tool_selection_prompt()}
+        if tool_context and tool_context[-1].get("role") == "user":
+            tool_context.insert(-1, tool_selection_prompt)
         else:
-            tool_context.append(tool_prompt)
+            tool_context.append(tool_selection_prompt)
+        post_tool_prompt_added = False
+        total_tool_calls = 0
+        executed_tools = []
 
         try:
-            tool_choice = "required" if intent.get("force") else None
-            tool_call_result = self.llm.chat_completion_with_tools(
-                tool_context,
-                tools=tools_schema,
-                tool_choice=tool_choice,
-            )
-            tool_calls = list(getattr(tool_call_result, 'tool_calls', None) or [])
-            if not tool_calls:
-                blocked_reason = None
-                if intent.get("force"):
-                    blocked_reason = "【错误】这是一个需要调用工具的请求，但这次没有生成有效工具调用。请把目标文件、路径或内容说得更明确一点。"
-                return {
-                    "rule": should_try_tool_call,
-                    "llm": llm_judged,
-                    "tool_calls": 0,
-                    "executed_tools": [],
-                    "blocked_reason": blocked_reason,
-                    "direct_result": None,
-                }
-
-            if hasattr(tool_call_result, 'model_dump'):
-                context.append(tool_call_result.model_dump())
-            elif hasattr(tool_call_result, 'to_dict'):
-                context.append(tool_call_result.to_dict())
-            else:
-                context.append(tool_call_result)
-
-            executed_tools = []
             import json
+            available_tools = ", ".join(tool.name for tool in self.tools.get_all_tools())
+            for round_index in range(max_tool_rounds):
+                tool_call_result = self.llm.chat_completion_with_tools(
+                    tool_context,
+                    tools=tools_schema,
+                    tool_choice=None,
+                )
+                if tool_call_result is None:
+                    return None
 
-            for tool_call in tool_calls:
-                function_name = tool_call.function.name
-                arguments = tool_call.function.arguments
-                call_id = tool_call.id
-                tool_instance = self.tools.get_tool(function_name)
-                kwargs, arg_error = self._parse_tool_arguments(arguments)
-
-                if tool_instance is None:
-                    result = f"Error: Tool {function_name} not found."
-                elif kwargs is None:
-                    result = {
-                        "tool": function_name,
-                        "ok": False,
-                        "error": arg_error or "Invalid tool arguments"
+                tool_calls = list(getattr(tool_call_result, 'tool_calls', None) or [])
+                if not tool_calls:
+                    return {
+                        "tool_calls": total_tool_calls,
+                        "executed_tools": executed_tools,
+                        "text_response": getattr(tool_call_result, "content", "") or "",
                     }
-                else:
-                    try:
-                        result = tool_instance.execute(**kwargs)
-                    except Exception as e:
-                        result = f"Error executing {function_name}: {str(e)}"
 
-                tool_payload = {
-                    "tool": function_name,
-                    "ok": not (isinstance(result, str) and result.startswith("Error")),
-                    "data": result
-                }
-                context.append({
-                    "role": "tool",
-                    "tool_call_id": call_id,
-                    "content": json.dumps(tool_payload, ensure_ascii=False)
-                })
-                executed_tools.append({
-                    "tool": function_name,
-                    "kwargs": kwargs,
-                    "result": result,
-                })
+                total_tool_calls += len(tool_calls)
+                tool_context.append(self._assistant_tool_call_message(tool_call_result, tool_calls))
+
+                for call_index, tool_call in enumerate(tool_calls):
+                    function = getattr(tool_call, "function", None)
+                    function_name = getattr(function, "name", "")
+                    raw_arguments = getattr(function, "arguments", None)
+                    kwargs, arg_error = self._parse_tool_arguments(raw_arguments)
+                    call_id = getattr(tool_call, "id", "") or f"call_{round_index}_{call_index}"
+                    tool_instance = self.tools.get_tool(function_name)
+
+                    if tool_instance is None:
+                        result = f"工具 {function_name} 不存在。可用工具：{available_tools}"
+                        ok = False
+                        error_type = "unknown_tool"
+                    elif kwargs is None:
+                        result = arg_error or "Invalid tool arguments"
+                        ok = False
+                        error_type = "invalid_arguments"
+                    else:
+                        try:
+                            result = tool_instance.execute(**kwargs)
+                            ok = not (isinstance(result, str) and ("失败" in result or result.startswith("Error")))
+                            error_type = None if ok else self._classify_tool_error(str(result))
+                        except Exception as e:
+                            result = f"执行 {function_name} 时出错：{str(e)}"
+                            ok = False
+                            error_type = "execution_exception"
+
+                    tool_payload = self._build_tool_payload(function_name, kwargs, result, ok, error_type)
+                    tool_context.append({
+                        "role": "tool",
+                        "tool_call_id": call_id,
+                        "content": json.dumps(tool_payload, ensure_ascii=False)
+                    })
+                    executed_tools.append({
+                        "tool": function_name,
+                        "kwargs": kwargs,
+                        "result": result,
+                        "payload": tool_payload,
+                    })
+
+                if not post_tool_prompt_added:
+                    tool_context.append({"role": "system", "content": self._build_post_tool_response_prompt()})
+                    post_tool_prompt_added = True
+
+            tool_context.append({
+                "role": "system",
+                "content": "工具调用轮次已达到上限。请停止调用工具，基于已有工具结果用自然语言向用户说明当前状态和下一步建议。"
+            })
 
             return {
-                "rule": should_try_tool_call,
-                "llm": llm_judged,
-                "tool_calls": len(tool_calls),
+                "tool_calls": total_tool_calls,
                 "executed_tools": executed_tools,
-                "direct_result": self._should_return_tool_directly(intent, executed_tools),
-                "blocked_reason": None,
+                "text_response": "工具调用次数过多，已停止继续执行。请确认要继续做什么。",
             }
         except Exception as e:
-            print(f"Tool call check failed: {e}")
+            print(f"Tool loop failed: {e}")
             return {
-                "rule": should_try_tool_call,
-                "llm": llm_judged,
                 "tool_calls": 0,
                 "executed_tools": [],
-                "blocked_reason": None,
-                "direct_result": None,
+                "text_response": None,
             }
     
     def get_history(self):

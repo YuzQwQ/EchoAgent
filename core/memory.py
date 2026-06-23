@@ -8,8 +8,8 @@ from typing import List, Dict, Any
 from config import config, load_system_prompt
 
 class MemoryManager:
-    def __init__(self, file_path: str = config.HISTORY_FILE):
-        self.file_path = file_path
+    def __init__(self, file_path: str | None = None):
+        self.file_path = file_path or config.HISTORY_FILE
         self._legacy_file_path = config.LEGACY_HISTORY_FILE
         self._history_dir = os.path.dirname(self.file_path)
         self._max_files = config.HISTORY_MAX_FILES

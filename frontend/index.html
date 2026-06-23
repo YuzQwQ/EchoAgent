@@ -117,20 +117,54 @@
 
     <section
         id="settings-modal"
-        class="settings-modal glass-modal bg-dark text-white border border-secondary rounded-4 shadow-lg p-4"
+        class="settings-modal glass-modal"
         style="display: none;"
         aria-labelledby="settings-title"
         aria-modal="true"
         role="dialog"
+        tabindex="-1"
     >
-        <div class="settings-header d-flex align-items-center justify-content-between mb-4">
-            <div>
-                <h3 id="settings-title" class="settings-title mb-1">设置</h3>
-                <p class="text-secondary small mb-0">配置连接、观察模式与访问令牌</p>
+        <div class="settings-header">
+            <div class="settings-heading">
+                <span class="settings-icon" aria-hidden="true">
+                    <i class="bi bi-sliders2"></i>
+                </span>
+                <div>
+                    <h3 id="settings-title" class="settings-title">设置</h3>
+                    <p class="settings-subtitle">连接、观察模式与访问令牌</p>
+                </div>
+            </div>
+            <button id="cancel-settings-btn" class="settings-close-btn" type="button" title="关闭" aria-label="关闭设置">
+                <i class="bi bi-x-lg"></i>
+            </button>
+        </div>
+
+        <div class="settings-section">
+            <div class="settings-section-title">
+                <i class="bi bi-folder2-open" aria-hidden="true"></i>
+                <span>工作目录</span>
+            </div>
+            <div class="settings-field">
+                <label for="workspace-root-input" class="form-label">本地工具目录</label>
+                <div class="settings-path-row">
+                    <input
+                        type="text"
+                        id="workspace-root-input"
+                        class="settings-input form-control form-control-sm"
+                        placeholder="D:\Echo Workspace"
+                    >
+                    <button id="select-workspace-dir-btn" class="settings-icon-btn" type="button" title="选择目录" aria-label="选择工作目录">
+                        <i class="bi bi-folder2-open"></i>
+                    </button>
+                </div>
             </div>
         </div>
 
         <div class="settings-section">
+            <div class="settings-section-title">
+                <i class="bi bi-hdd-network" aria-hidden="true"></i>
+                <span>连接</span>
+            </div>
             <div class="settings-field">
                 <label for="server-ip-input" class="form-label">后端地址</label>
                 <input
@@ -140,7 +174,13 @@
                     placeholder="https://echo.example.com"
                 >
             </div>
+        </div>
 
+        <div class="settings-section">
+            <div class="settings-section-title">
+                <i class="bi bi-eye" aria-hidden="true"></i>
+                <span>行为</span>
+            </div>
             <div class="settings-field">
                 <label for="observer-mode-select" class="form-label">观察模式</label>
                 <select id="observer-mode-select" class="settings-select form-select form-select-sm">
@@ -148,43 +188,57 @@
                     <option value="terraria">泰拉瑞亚 (Terraria)</option>
                 </select>
             </div>
+        </div>
 
+        <div class="settings-section">
+            <div class="settings-section-title">
+                <i class="bi bi-shield-lock" aria-hidden="true"></i>
+                <span>权限</span>
+            </div>
             <div class="settings-field">
                 <label for="access-token-input" class="form-label">Access Token</label>
-                <input
-                    type="password"
-                    id="access-token-input"
-                    class="settings-input form-control form-control-sm"
-                    placeholder="用于聊天与 WebSocket 连接"
-                >
+                <div class="settings-token-row">
+                    <input
+                        type="password"
+                        id="access-token-input"
+                        class="settings-input form-control form-control-sm"
+                        placeholder="用于聊天与 WebSocket 连接"
+                    >
+                    <button id="toggle-token-visibility-btn" class="settings-icon-btn" type="button" title="显示/隐藏令牌" aria-label="显示或隐藏 Access Token">
+                        <i class="bi bi-eye"></i>
+                    </button>
+                </div>
             </div>
         </div>
 
-        <section id="admin-panel-info" class="settings-details mt-3">
-            <div class="settings-hint form-text text-secondary">
-                运行时模型配置和管理令牌已经迁移到独立的 Admin 页面。
-            </div>
-            <div class="settings-hint form-text text-secondary mt-2">
-                Bridge 客户端只负责连接、观察模式和访问令牌。
+        <section id="admin-panel-info" class="settings-details">
+            <div>
+                <div class="settings-section-title">
+                    <i class="bi bi-window-sidebar" aria-hidden="true"></i>
+                    <span>模型管理</span>
+                </div>
+                <div class="settings-hint">
+                    运行时模型配置和管理令牌已经迁移到独立的 Admin 页面。
+                </div>
             </div>
             <a
                 id="open-admin-panel-link"
-                class="btn btn-outline-light btn-sm mt-3"
+                class="settings-admin-link"
                 href="#"
                 target="_blank"
                 rel="noopener noreferrer"
             >
-                打开 Admin 页面
+                <span>打开 Admin 页面</span>
+                <i class="bi bi-box-arrow-up-right" aria-hidden="true"></i>
             </a>
-            <div id="runtime-config-status" class="settings-hint form-text text-secondary mt-2"></div>
         </section>
 
-        <div class="settings-actions d-flex justify-content-end gap-2 mt-4">
-            <button id="cancel-settings-btn" class="settings-btn secondary btn btn-outline-light btn-sm">
-                取消
-            </button>
-            <button id="save-settings-btn" class="settings-btn primary btn btn-primary btn-sm">
-                保存
+        <div id="runtime-config-status" class="settings-status" role="status" aria-live="polite"></div>
+
+        <div class="settings-actions">
+            <button id="save-settings-btn" class="settings-btn primary" type="button">
+                <i class="bi bi-check2" aria-hidden="true"></i>
+                <span>保存</span>
             </button>
         </div>
     </section>

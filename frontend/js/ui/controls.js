@@ -73,6 +73,16 @@
     }
 
     if (dom?.settingsBtn && dom.settingsModal && storage && runtimeConfig && appState) {
+        let modalOpen = false;
+
+        const setStatus = (message, isError = false) => {
+            if (!dom.runtimeConfigStatus) {
+                return;
+            }
+            dom.runtimeConfigStatus.textContent = message || '';
+            dom.runtimeConfigStatus.classList.toggle('is-error', !!isError);
+        };
+
         const updateAdminLink = () => {
             if (!dom.openAdminPanelLink) {
                 return;
@@ -89,32 +99,84 @@
             dom.openAdminPanelLink.removeAttribute('aria-disabled');
         };
 
+        const selectWorkspaceDirectory = async () => {
+            try {
+                const electron = window.require?.('electron');
+                if (!electron?.ipcRenderer) {
+                    return null;
+                }
+                return await electron.ipcRenderer.invoke('select-workspace-directory');
+            } catch (error) {
+                console.warn('Workspace directory picker failed:', error);
+                return null;
+            }
+        };
+
+        const loadWorkspaceRoot = async () => {
+            if (!dom.workspaceRootInput) {
+                return;
+            }
+            try {
+                const status = await runtimeConfig.fetchRuntimeConfigStatus(appState.connection.serverAddress);
+                const workspaceRoot = status?.workspace?.root || '';
+                if (workspaceRoot) {
+                    dom.workspaceRootInput.value = workspaceRoot;
+                }
+            } catch (error) {
+                console.warn('Failed to load workspace root:', error);
+            }
+        };
+
         const openModal = () => {
+            modalOpen = true;
             dom.serverIpInput.value = appState.connection.serverAddress;
             if (dom.observerModeSelect) dom.observerModeSelect.value = appState.observer.mode;
             if (dom.accessTokenInput) {
                 dom.accessTokenInput.value = storage.getAccessToken();
+                dom.accessTokenInput.type = 'password';
+            }
+            if (dom.workspaceRootInput) {
+                dom.workspaceRootInput.value = '';
             }
             updateAdminLink();
+            loadWorkspaceRoot();
 
-            if (dom.runtimeConfigStatus) {
-                dom.runtimeConfigStatus.textContent = appEnv.isBridge
-                    ? 'Bridge mode only stores the server address, observer mode, and access token.'
-                    : 'Runtime model configuration has moved to the separate Admin page.';
+            setStatus(appEnv.isBridge
+                ? 'Bridge 模式仅保存后端地址、观察模式和访问令牌。'
+                : '运行时模型配置已经迁移到独立的 Admin 页面。');
+            if (dom.settingsBackdrop) {
+                dom.settingsBackdrop.style.display = 'block';
             }
             dom.settingsModal.style.display = 'block';
+            dom.settingsModal.focus?.();
+            setTimeout(() => dom.serverIpInput?.focus(), 0);
         };
 
         const closeModal = () => {
+            modalOpen = false;
             dom.settingsModal.style.display = 'none';
+            if (dom.settingsBackdrop) {
+                dom.settingsBackdrop.style.display = 'none';
+            }
+            dom.settingsBtn.focus?.();
         };
 
         const saveSettings = async () => {
             const newAddress = dom.serverIpInput.value.trim();
             const newMode = dom.observerModeSelect ? dom.observerModeSelect.value : 'general';
             const accessToken = dom.accessTokenInput ? dom.accessTokenInput.value : '';
+            const workspaceRoot = dom.workspaceRootInput ? dom.workspaceRootInput.value.trim() : '';
 
-            if (!newAddress) return;
+            if (!newAddress) {
+                setStatus('请填写后端地址。', true);
+                dom.serverIpInput.focus();
+                return;
+            }
+
+            if (dom.saveSettingsBtn) {
+                dom.saveSettingsBtn.disabled = true;
+            }
+            setStatus('正在保存设置...');
 
             const prevAddress = appState.connection.serverAddress;
             storage.setServerAddress(newAddress);
@@ -123,22 +185,77 @@
             appState.connection.serverAddress = newAddress;
             appState.observer.mode = newMode;
 
-            if (dom.runtimeConfigStatus) {
-                dom.runtimeConfigStatus.textContent = 'Connection settings saved.';
+            try {
+                if (workspaceRoot) {
+                    await runtimeConfig.applyRuntimeConfig(newAddress, { workspace_root: workspaceRoot });
+                }
+            } catch (error) {
+                setStatus(error.message || '工作目录保存失败。', true);
+                if (dom.saveSettingsBtn) {
+                    dom.saveSettingsBtn.disabled = false;
+                }
+                return;
             }
 
-            alert('Settings saved.');
-            closeModal();
+            setStatus('设置已保存。');
 
             if (newAddress !== prevAddress) {
-                location.reload();
+                setTimeout(() => location.reload(), 350);
+                return;
             }
+
+            if (dom.saveSettingsBtn) {
+                dom.saveSettingsBtn.disabled = false;
+            }
+            setTimeout(closeModal, 350);
         };
 
         dom.serverIpInput?.addEventListener('input', updateAdminLink);
+        dom.selectWorkspaceDirBtn?.addEventListener('click', async () => {
+            const selectedPath = await selectWorkspaceDirectory();
+            if (selectedPath && dom.workspaceRootInput) {
+                dom.workspaceRootInput.value = selectedPath;
+                setStatus('');
+            }
+        });
+        dom.serverIpInput?.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter') {
+                event.preventDefault();
+                saveSettings();
+            }
+        });
+        dom.workspaceRootInput?.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter') {
+                event.preventDefault();
+                saveSettings();
+            }
+        });
+        dom.accessTokenInput?.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter') {
+                event.preventDefault();
+                saveSettings();
+            }
+        });
+        dom.toggleTokenVisibilityBtn?.addEventListener('click', () => {
+            if (!dom.accessTokenInput) {
+                return;
+            }
+            const visible = dom.accessTokenInput.type === 'text';
+            dom.accessTokenInput.type = visible ? 'password' : 'text';
+            const icon = dom.toggleTokenVisibilityBtn.querySelector('i');
+            if (icon) {
+                icon.className = visible ? 'bi bi-eye' : 'bi bi-eye-slash';
+            }
+        });
         dom.settingsBtn.addEventListener('click', openModal);
+        dom.settingsBackdrop?.addEventListener('click', closeModal);
         dom.cancelSettingsBtn?.addEventListener('click', closeModal);
         dom.saveSettingsBtn?.addEventListener('click', saveSettings);
+        document.addEventListener('keydown', (event) => {
+            if (modalOpen && event.key === 'Escape') {
+                closeModal();
+            }
+        });
     }
 
     if (dom?.ttsBtn) {
