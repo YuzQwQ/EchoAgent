@@ -30,7 +30,8 @@
 
             audioPlayer?.reset();
             showSubtitle?.(`Me: ${text}`, true);
-            wsClient?.sendText(text);
+            if (!wsClient?.sendText(text)) return;
+            window.messageStore?.addUserMessage(text);
 
             dom.miniInput.value = '';
             if (dom.inputOverlay) {
@@ -287,6 +288,7 @@
 
     if (dom?.closeBtn) {
         window.appendSystemMessage = (text) => {
+            window.messageStore?.addSystemMessage(text);
             showSubtitle?.(`[System]: ${text}`, true);
         };
 

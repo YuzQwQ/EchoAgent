@@ -6,6 +6,8 @@
     const runtimeConfig = window.runtimeConfig;
     const updateConnectionBadge = window.updateConnectionBadge;
     const renderHelpers = window.renderHelpers;
+    const messageStore = window.messageStore;
+    const traceStore = window.traceStore;
     const live2d = window.live2d;
     const audioPlayer = window.audioPlayer;
     const normalizeServerAddress = runtimeConfig.normalizeServerAddress;
@@ -45,20 +47,31 @@
                 window.runtime?.setConnected(connected);
             },
             onStatus: (online, text) => updateConnectionBadge(online, text),
-            onSystemMessage: (text) => window.appendSystemMessage?.(text),
+            onSystemMessage: (text) => {
+                window.appendSystemMessage?.(text);
+            },
             onSendEnabled: (enabled) => {
                 if (dom.miniSendBtn) {
                     dom.miniSendBtn.disabled = !enabled;
                 }
+                if (dom.sendBtn) {
+                    dom.sendBtn.disabled = !enabled;
+                }
             },
             onUserInput: (content) => {
+                messageStore?.addUserMessage(content);
                 renderHelpers?.handleUserInput(content);
             },
+            onTraceEvent: (event) => {
+                traceStore?.addEvent(event);
+            },
             onChunkStart: () => {
+                messageStore?.startAssistantMessage();
                 renderHelpers?.handleChunkStart();
                 audioPlayer.reset();
             },
             onChunkText: (text) => {
+                messageStore?.appendAssistantChunk(text);
                 renderHelpers?.handleChunkText(text);
             },
             onEmotion: (emotion) => {
@@ -71,9 +84,11 @@
                 audioPlayer.queueSingle(data.content);
             },
             onDone: () => {
+                messageStore?.finishAssistantMessage();
                 renderHelpers?.handleChunkDone();
             },
             onErrorMessage: (content) => {
+                messageStore?.addSystemMessage(content);
                 renderHelpers?.handleError(content);
             }
         });

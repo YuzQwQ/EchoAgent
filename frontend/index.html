@@ -69,6 +69,12 @@
                     <button class="icon-btn" id="motion-btn" title="动作演示" aria-label="动作演示">
                         <i class="bi bi-camera-reels"></i>
                     </button>
+                    <button class="icon-btn" id="recent-history-btn" title="近期历史" aria-label="查看近期历史">
+                        <i class="bi bi-clock-history"></i>
+                    </button>
+                    <button class="icon-btn" id="workbench-btn" title="工作台" aria-label="打开工作台">
+                        <i class="bi bi-layout-sidebar-inset"></i>
+                    </button>
                     <button class="icon-btn" id="tts-btn" title="开启/关闭语音" aria-label="切换语音">
                         <i class="bi bi-volume-mute"></i>
                     </button>
@@ -91,12 +97,54 @@
         <aside id="chat-section" class="glass-panel chat-shell">
             <div class="chat-header">
                 <div>
-                    <h2 class="chat-title mb-0">Echo</h2>
-                    <p class="chat-subtitle mb-0">Observer-first Desktop Agent</p>
+                    <h2 class="chat-title mb-0">Echo 工作台</h2>
+                    <p class="chat-subtitle mb-0">完整会话、长文本输入与本地工具测试</p>
+                </div>
+                <div class="chat-actions">
+                    <button id="copy-turn-btn" class="workbench-action-btn" type="button" title="复制本轮对话">
+                        <i class="bi bi-clipboard"></i>
+                        <span>复制本轮</span>
+                    </button>
+                    <button id="clear-workbench-history-btn" class="workbench-action-btn" type="button" title="清空前端显示历史">
+                        <i class="bi bi-trash3"></i>
+                        <span>清空</span>
+                    </button>
+                    <button id="close-workbench-btn" class="workbench-action-btn" type="button" title="收起工作台">
+                        <i class="bi bi-arrows-angle-contract"></i>
+                    </button>
                 </div>
             </div>
 
             <div id="chat-container" class="chat-container"></div>
+
+            <section id="trace-panel" class="trace-panel" aria-label="运行日志">
+                <div class="trace-header">
+                    <div class="trace-title">
+                        <i class="bi bi-terminal"></i>
+                        <span>命令行</span>
+                    </div>
+                    <div class="trace-actions">
+                        <label class="trace-debug-toggle" title="显示 debug 级别日志">
+                            <input id="trace-debug-toggle" type="checkbox">
+                            <span>Debug</span>
+                        </label>
+                        <button id="copy-trace-btn" class="workbench-action-btn" type="button" title="复制日志">
+                            <i class="bi bi-clipboard"></i>
+                            <span>复制日志</span>
+                        </button>
+                        <button id="detach-trace-btn" class="workbench-action-btn" type="button" title="分离日志窗口">
+                            <i class="bi bi-box-arrow-up-right"></i>
+                            <span>分离</span>
+                        </button>
+                        <button id="clear-trace-btn" class="workbench-action-btn" type="button" title="清空日志">
+                            <i class="bi bi-trash3"></i>
+                            <span>清空日志</span>
+                        </button>
+                    </div>
+                </div>
+                <div id="trace-list" class="trace-list"></div>
+            </section>
+            <div id="trace-resizer" class="trace-resizer" role="separator" aria-orientation="horizontal" aria-label="Resize command log"></div>
 
             <div id="input-area" class="chat-input-area input-group">
                 <textarea
@@ -110,6 +158,16 @@
                 </button>
             </div>
         </aside>
+
+        <section id="recent-history-panel" class="glass-panel recent-history-panel" aria-label="近期历史" style="display: none;">
+            <div class="recent-history-header">
+                <span>近期历史</span>
+                <button id="close-recent-history-btn" class="settings-icon-btn" type="button" title="关闭" aria-label="关闭近期历史">
+                    <i class="bi bi-x-lg"></i>
+                </button>
+            </div>
+            <div id="recent-history-list" class="recent-history-list"></div>
+        </section>
     </main>
 
     <!-- 设置弹窗 -->
@@ -246,6 +304,8 @@
     <script src="js/config/app-env.js"></script>
     <script src="js/config/storage.js"></script>
     <script src="js/state/app-state.js"></script>
+    <script src="js/state/message-store.js"></script>
+    <script src="js/state/trace-store.js"></script>
     <script src="js/ui/dom.js"></script>
     <script src="js/config/runtime-config.js"></script>
     <script src="js/ui/status-chip.js"></script>
@@ -256,6 +316,7 @@
     <script src="js/observer/observer-controller.js"></script>
     <script src="js/audio/recorder.js"></script>
     <script src="js/network/websocket.js"></script>
+    <script src="js/ui/workbench.js"></script>
     <script src="js/ui/controls.js"></script>
     <script src="js/live2d/motions.js"></script>
     <script src="js/live2d/focus-tracking.js"></script>

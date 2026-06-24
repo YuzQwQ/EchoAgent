@@ -319,6 +319,87 @@ class LocalTextToolTests(unittest.TestCase):
         self.assertIn('"ok": true', tool_content)
         self.assertIn('"tool": "append_text_file"', tool_content)
 
+    def test_chat_emits_trace_events_for_successful_tool_call(self):
+        fake_llm = self.SequenceLLM([
+            self._tool_response("append_text_file", {"path": "trace.txt", "content": "hello"}),
+            types.SimpleNamespace(content="done")
+        ])
+        agent = self._make_agent(fake_llm)
+        events = []
+
+        response = "".join(agent.chat("append hello", event_sink=events.append))
+
+        self.assertEqual("done", response)
+        event_names = [event["event"] for event in events]
+        self.assertIn("chat_start", event_names)
+        self.assertIn("llm_request", event_names)
+        self.assertIn("tool_call", event_names)
+        self.assertIn("tool_result", event_names)
+        self.assertIn("chat_end", event_names)
+
+        tool_call = next(event for event in events if event["event"] == "tool_call")
+        self.assertEqual("append_text_file", tool_call["tool"])
+        self.assertEqual("append", tool_call["action"])
+
+        tool_result = next(event for event in events if event["event"] == "tool_result")
+        self.assertTrue(tool_result["ok"])
+        self.assertEqual("append_text_file", tool_result["tool"])
+        self.assertEqual("append", tool_result["action"])
+        self.assertIn("trace.txt", tool_result.get("path", ""))
+
+    def test_chat_emits_trace_events_for_tool_error(self):
+        fake_llm = self.SequenceLLM([
+            self._tool_response("append_text_file", {"path": "bad.md", "content": "hello"}),
+            types.SimpleNamespace(content="failed")
+        ])
+        agent = self._make_agent(fake_llm)
+        events = []
+
+        response = "".join(agent.chat("append hello", event_sink=events.append))
+
+        self.assertEqual("failed", response)
+        tool_result = next(event for event in events if event["event"] == "tool_result")
+        self.assertFalse(tool_result["ok"])
+        self.assertEqual("error", tool_result["level"])
+        self.assertIn("error_type", tool_result)
+        self.assertFalse(os.path.exists(os.path.join(self.temp_dir, "bad.md")))
+
+    def test_chat_without_tool_calls_emits_chat_trace_only(self):
+        fake_llm = self.SequenceLLM([
+            types.SimpleNamespace(content="plain")
+        ])
+        agent = self._make_agent(fake_llm)
+        events = []
+
+        response = "".join(agent.chat("chat only", event_sink=events.append))
+
+        self.assertEqual("plain", response)
+        event_names = [event["event"] for event in events]
+        self.assertIn("chat_start", event_names)
+        self.assertIn("chat_end", event_names)
+        self.assertNotIn("tool_call", event_names)
+        self.assertNotIn("tool_result", event_names)
+
+    def test_trace_sanitizer_redacts_secrets_and_truncates_payloads(self):
+        agent = EchoAgent.__new__(EchoAgent)
+        long_content = "x" * 700
+        base64_content = "a" * 160
+        payload = {
+            "api_key": "secret-key",
+            "authorization": "Bearer token",
+            "content": long_content,
+            "image": f"data:image/png;base64,{base64_content}",
+            "nested": {"access_token": "nested-secret"}
+        }
+
+        sanitized = agent._sanitize_trace_value(payload)
+
+        self.assertEqual("[redacted]", sanitized["api_key"])
+        self.assertEqual("[redacted]", sanitized["authorization"])
+        self.assertTrue(sanitized["content"].endswith("...[truncated]"))
+        self.assertIn("[data-url omitted", sanitized["image"])
+        self.assertEqual("[redacted]", sanitized["nested"]["access_token"])
+
 
 class ClipboardToolTests(unittest.TestCase):
     def test_clipboard_read_write_uses_pyperclip(self):

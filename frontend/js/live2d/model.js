@@ -24,12 +24,7 @@
             if (window.live2dFocus?.init) {
                 window.live2dFocus.init({ app, model: live2dModel });
             }
-            if (window.live2dFocus?.resizeModel) {
-                window.live2dFocus.resizeModel({ app, model: live2dModel });
-            }
-            if (window.live2dFocus?.bindResize) {
-                window.live2dFocus.bindResize({ app, model: live2dModel });
-            }
+            resize();
             if (window.live2dMotions?.stopAll) {
                 window.live2dMotions.stopAll(live2dModel);
             }
@@ -50,10 +45,22 @@
     const getModel = () => live2dModel;
     const getApp = () => app;
 
+    const resize = () => {
+        if (!app || !live2dModel) return;
+        const container = document.getElementById('live2d-container');
+        if (container) {
+            app.renderer.resize(container.clientWidth, container.clientHeight);
+        }
+        if (window.live2dFocus?.resizeModel) {
+            window.live2dFocus.resizeModel({ app, model: live2dModel });
+        }
+    };
+
     window.live2d = {
         init,
         triggerMotion,
         getModel,
-        getApp
+        getApp,
+        resize
     };
 })();

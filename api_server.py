@@ -21,6 +21,7 @@ import io
 import cv2
 import numpy as np
 import time
+from datetime import datetime, timezone
 
 app = FastAPI(title="Echo API Service")
 
@@ -190,6 +191,22 @@ async def security_middleware(request: Request, call_next):
 # 初始化 Agent 和 TTS
 agent = EchoAgent()
 tts_service = TTSService()
+
+def _trace_timestamp() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+def _runtime_trace_event(event: str, level: str = "info", message: str = "", trace_id: str = "runtime", **fields):
+    payload = {
+        "type": "trace_event",
+        "trace_id": trace_id,
+        "event": event,
+        "level": level,
+        "timestamp": _trace_timestamp(),
+        "message": message,
+    }
+    for key, value in fields.items():
+        payload[key] = agent._sanitize_trace_value(value, key=key)
+    return payload
 
 def _transcribe_audio(audio_bytes: bytes) -> str:
     provider = (config.STT_PROVIDER or "google").lower()
@@ -509,6 +526,14 @@ async def websocket_endpoint(websocket: WebSocket):
             enable_tts = message_data.get("enable_tts", False) # 接收前端开关状态
             allow_behavior_memory = True
             allow_l0 = False
+            pending_trace_events = []
+
+            def queue_trace_event(event):
+                pending_trace_events.append(event)
+
+            async def flush_trace_events():
+                while pending_trace_events:
+                    await websocket.send_json(pending_trace_events.pop(0))
 
             # 用户主动交互，重置冷却时间
             if msg_type in ["text", "audio", "image"]:
@@ -542,6 +567,12 @@ async def websocket_endpoint(websocket: WebSocket):
                         category = analysis_data.get("category", "IGNORE")
                         
                         print(f"[Observer] Category: {category}, Desc: {description}")
+                        await websocket.send_json(_runtime_trace_event(
+                            "observer_result",
+                            message=f"Observer classified frame as {category}",
+                            category=category,
+                            content_preview=description,
+                        ))
                         
                         # 2. 决策逻辑
                         # [Refactor] 更新 Soft Context (始终执行)
@@ -552,6 +583,11 @@ async def websocket_endpoint(websocket: WebSocket):
                         if should_speak:
                             # 触发主动回复
                             print(f"[Observer] Triggering Echo response ({category})...")
+                            await websocket.send_json(_runtime_trace_event(
+                                "observer_speak",
+                                message=f"Observer triggered Echo response ({category})",
+                                category=category,
+                            ))
                             observer_state.record_speak(category, current_ts)
                             
                             # 构造观察模式的输入
@@ -587,6 +623,12 @@ async def websocket_endpoint(websocket: WebSocket):
                                 # 存入 L0，作为 Perceptual Context 的来源
                                 agent.add_observation_to_context(description)
                                 print(f"[Observer] Silent observation recorded (Category: {category})")
+                                await websocket.send_json(_runtime_trace_event(
+                                    "observer_record",
+                                    message=f"Observer recorded silent observation ({category})",
+                                    category=category,
+                                    content_preview=description,
+                                ))
                             
                             continue # 不触发回复
 
@@ -610,11 +652,21 @@ async def websocket_endpoint(websocket: WebSocket):
                         audio_bytes = base64.b64decode(audio_data_str)
                     
                     print("Recognizing speech...")
+                    await websocket.send_json(_runtime_trace_event(
+                        "stt_start",
+                        message="Speech recognition started",
+                        provider=config.STT_PROVIDER or "google",
+                    ))
                     loop = asyncio.get_running_loop()
                     text = await loop.run_in_executor(None, lambda: _transcribe_audio(audio_bytes))
                     print(f"Recognized text: {text}")
                     
                     if text:
+                        await websocket.send_json(_runtime_trace_event(
+                            "stt_result",
+                            message="Speech recognition finished",
+                            content_preview=text,
+                        ))
                         user_input = text
                         msg_type = "text" # 转为文本处理流程
                         
@@ -629,18 +681,42 @@ async def websocket_endpoint(websocket: WebSocket):
                         
                 except sr.UnknownValueError:
                     print("STT: UnknownValueError")
+                    await websocket.send_json(_runtime_trace_event(
+                        "stt_error",
+                        level="error",
+                        message="Speech recognition could not understand audio",
+                        error_type="unknown_value",
+                    ))
                     await websocket.send_json({"type": "error", "content": "听不清，请再说一遍"})
                     continue
                 except sr.RequestError as e:
                     print(f"STT: RequestError {e}")
+                    await websocket.send_json(_runtime_trace_event(
+                        "stt_error",
+                        level="error",
+                        message="Speech recognition service request failed",
+                        error_type="request_error",
+                    ))
                     await websocket.send_json({"type": "error", "content": "语音服务连接失败，请检查网络"})
                     continue
                 except ValueError as e:
                     print(f"STT: ConfigError {e}")
+                    await websocket.send_json(_runtime_trace_event(
+                        "stt_error",
+                        level="error",
+                        message="Speech recognition is not configured",
+                        error_type="config_error",
+                    ))
                     await websocket.send_json({"type": "error", "content": "语音服务未配置或不可用"})
                     continue
                 except Exception as e:
                     print(f"STT Error: {e}")
+                    await websocket.send_json(_runtime_trace_event(
+                        "stt_error",
+                        level="error",
+                        message=f"Speech recognition failed: {str(e)}",
+                        error_type="stt_exception",
+                    ))
                     await websocket.send_json({"type": "error", "content": f"语音处理错误: {str(e)}"})
                     continue
 
@@ -685,6 +761,12 @@ async def websocket_endpoint(websocket: WebSocket):
                             category = analysis_data.get("category", "IGNORE")
                             
                             print(f"[Observer Legacy] Category: {category}, Desc: {description}")
+                            await websocket.send_json(_runtime_trace_event(
+                                "observer_result",
+                                message=f"Observer classified frame as {category}",
+                                category=category,
+                                content_preview=description,
+                            ))
                             
                             # 决策逻辑
                             current_ts = time.time()
@@ -693,6 +775,11 @@ async def websocket_endpoint(websocket: WebSocket):
                             
                             if should_speak:
                                 observer_state.record_speak(category, current_ts)
+                                await websocket.send_json(_runtime_trace_event(
+                                    "observer_speak",
+                                    message=f"Observer triggered Echo response ({category})",
+                                    category=category,
+                                ))
                                 
                                 # 构造输入
                                 hints = [
@@ -706,19 +793,26 @@ async def websocket_endpoint(websocket: WebSocket):
                                 
                                 # 借用 agent.chat 生成回复
                                 full_response = ""
-                                for chunk in agent.chat(observe_input, allow_behavior_memory=True, allow_l0=True):
+                                for chunk in agent.chat(observe_input, allow_behavior_memory=True, allow_l0=True, event_sink=queue_trace_event):
                                     full_response += chunk
+                                    await flush_trace_events()
                                     await websocket.send_json({
                                         "type": "chunk",
                                         "content": chunk,
                                         "is_final": False
                                     })
                                     await asyncio.sleep(0.01)
-                                    
+                                await flush_trace_events()
                             else:
                                 if category != "IGNORE":
                                     agent.add_observation_to_context(description)
                                     print(f"[Observer Legacy] Silent observation recorded (Category: {category})")
+                                    await websocket.send_json(_runtime_trace_event(
+                                        "observer_record",
+                                        message=f"Observer recorded silent observation ({category})",
+                                        category=category,
+                                        content_preview=description,
+                                    ))
                                 continue
                                 
                         except Exception as e:
@@ -769,9 +863,10 @@ async def websocket_endpoint(websocket: WebSocket):
 
                 try:
                     chunk_id = 0
-                    for chunk in agent.chat(user_input, allow_behavior_memory=allow_behavior_memory, allow_l0=allow_l0):
+                    for chunk in agent.chat(user_input, allow_behavior_memory=allow_behavior_memory, allow_l0=allow_l0, event_sink=queue_trace_event):
                         full_response += chunk
                         tts_buffer += chunk
+                        await flush_trace_events()
                         
                         # 发送文本块给前端
                         await websocket.send_json({
@@ -818,8 +913,9 @@ async def websocket_endpoint(websocket: WebSocket):
                         await tts_queue.put(None)
                         # 等待 TTS 任务全部完成
                         await tts_task
-
+                    
                     # 发送结束标记
+                    await flush_trace_events()
                     await websocket.send_json({
                         "type": "done",
                         "content": "",
@@ -829,6 +925,13 @@ async def websocket_endpoint(websocket: WebSocket):
                 except Exception as e:
                     error_msg = f"Error: {str(e)}"
                     print(error_msg)
+                    queue_trace_event(_runtime_trace_event(
+                        "error",
+                        level="error",
+                        message=error_msg,
+                        error_type="websocket_text_error",
+                    ))
+                    await flush_trace_events()
                     await websocket.send_json({
                         "type": "error",
                         "content": error_msg
@@ -855,10 +958,22 @@ async def tts_worker(websocket: WebSocket, queue: asyncio.Queue, service: TTSSer
             
         chunk_id, text = item
         try:
+            await websocket.send_json(_runtime_trace_event(
+                "tts_start",
+                message="TTS synthesis started",
+                sequence_id=chunk_id,
+                content_preview=text,
+            ))
             # 串行调用 TTS (耗时操作)
             audio_base64 = await service.text_to_speech(text)
             
             if audio_base64:
+                await websocket.send_json(_runtime_trace_event(
+                    "tts_result",
+                    message="TTS synthesis finished",
+                    sequence_id=chunk_id,
+                    audio_size=len(audio_base64),
+                ))
                 await websocket.send_json({
                     "type": "audio_stream", # 新类型，支持流式
                     "sequence_id": chunk_id,
@@ -868,6 +983,13 @@ async def tts_worker(websocket: WebSocket, queue: asyncio.Queue, service: TTSSer
             error_msg = f"TTS Worker Error: {str(e)}"
             print(error_msg)
             try:
+                await websocket.send_json(_runtime_trace_event(
+                    "tts_error",
+                    level="error",
+                    message=error_msg,
+                    error_type="tts_exception",
+                    sequence_id=chunk_id,
+                ))
                 await websocket.send_json({
                     "type": "error",
                     "content": "语音生成失败，请检查 TTS 服务连接"

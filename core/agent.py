@@ -1,5 +1,5 @@
 from typing import Generator, Optional, Dict, Any
-from datetime import datetime
+from datetime import datetime, timezone
 from core.llm_service import LLMService
 from core.vision_service import VisionService
 from core.memory import MemoryManager
@@ -538,7 +538,7 @@ class EchoAgent:
             "严禁声称工具结果之外的事情已经发生。"
         )
 
-    def chat(self, user_input: str, allow_behavior_memory: bool = True, allow_l0: bool = False) -> Generator[str, None, None]:
+    def chat(self, user_input: str, allow_behavior_memory: bool = True, allow_l0: bool = False, event_sink=None) -> Generator[str, None, None]:
         """
         处理用户输入，生成回复，并管理记忆
         包含：RAG、Context构建、Tool Call、流式生成
@@ -548,6 +548,13 @@ class EchoAgent:
         trace_id = uuid.uuid4().hex[:8]
         start_time = time.monotonic()
         print(f"[trace:{trace_id}] chat_start")
+        self._emit_trace(
+            event_sink,
+            trace_id,
+            "chat_start",
+            message="Chat request started",
+            input_preview=user_input,
+        )
 
         self.memory.add_message("user", user_input)
         self.memory.increment_turn()
@@ -605,7 +612,7 @@ class EchoAgent:
                 else:
                     context.append(rag_msg)
 
-        tool_info = self._run_tool_loop(context)
+        tool_info = self._run_tool_loop(context, event_sink=event_sink, trace_id=trace_id)
         if tool_info:
             print(f"[trace:{trace_id}] tool_check tool_calls={tool_info.get('tool_calls')}")
             text_response = tool_info.get("text_response")
@@ -615,9 +622,27 @@ class EchoAgent:
                 self._run_async_summary()
                 elapsed_ms = int((time.monotonic() - start_time) * 1000)
                 print(f"[trace:{trace_id}] chat_end elapsed_ms={elapsed_ms} response_chars={len(text_response)}")
+                self._emit_trace(
+                    event_sink,
+                    trace_id,
+                    "chat_end",
+                    message="Chat request finished",
+                    elapsed_ms=elapsed_ms,
+                    response_chars=len(text_response),
+                    tool_calls=tool_info.get("tool_calls", 0),
+                )
                 yield text_response
                 return
 
+        self._emit_trace(
+            event_sink,
+            trace_id,
+            "llm_request",
+            message="Requesting streaming assistant response",
+            model=getattr(config, "PRIMARY_MODEL_NAME", ""),
+            mode="stream",
+            round=0,
+        )
         final_response = yield from self._process_stream_response(context, trace_id=trace_id)
 
         if final_response:
@@ -626,6 +651,15 @@ class EchoAgent:
 
         elapsed_ms = int((time.monotonic() - start_time) * 1000)
         print(f"[trace:{trace_id}] chat_end elapsed_ms={elapsed_ms} response_chars={len(final_response or '')}")
+        self._emit_trace(
+            event_sink,
+            trace_id,
+            "chat_end",
+            message="Chat request finished",
+            elapsed_ms=elapsed_ms,
+            response_chars=len(final_response or ""),
+            tool_calls=0,
+        )
 
     def process_observer_image(self, image_bytes: bytes, mime_type: str, observer_state, current_time: float, game_context: Optional[Dict[str, Any]] = None) -> Generator[str, None, None]:
         """
@@ -1062,10 +1096,61 @@ class EchoAgent:
             payload["error_type"] = error_type or self._classify_tool_error(message)
         return payload
 
+    def _trace_timestamp(self) -> str:
+        return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+    def _sanitize_trace_value(self, value, key: Optional[str] = None, limit: int = 500, depth: int = 0):
+        secret_keys = ("api_key", "token", "authorization", "password", "secret", "access_token", "admin_token")
+        key_name = (key or "").lower()
+        if any(secret in key_name for secret in secret_keys):
+            return "[redacted]"
+        if depth > 4:
+            return "[max_depth]"
+        if isinstance(value, dict):
+            return {
+                str(k): self._sanitize_trace_value(v, key=str(k), limit=limit, depth=depth + 1)
+                for k, v in value.items()
+            }
+        if isinstance(value, (list, tuple)):
+            return [self._sanitize_trace_value(item, limit=limit, depth=depth + 1) for item in value[:20]]
+        if isinstance(value, bytes):
+            return f"[bytes omitted length={len(value)}]"
+        if isinstance(value, str):
+            import re
+            compact = value.strip()
+            if compact.startswith("data:") and "base64," in compact:
+                return f"[data-url omitted length={len(value)}]"
+            looks_base64 = len(compact) > 120 and re.fullmatch(r"[A-Za-z0-9+/=\r\n]+", compact)
+            base64_field = "base64" in key_name or key_name in {"image", "audio", "image_data", "audio_data"}
+            if looks_base64 and (base64_field or any(char in compact for char in "+/=")):
+                return f"[base64 omitted length={len(value)}]"
+            if len(value) > limit:
+                return value[:limit] + "...[truncated]"
+            return value
+        return value
+
+    def _emit_trace(self, event_sink, trace_id: str, event: str, level: str = "info", message: str = "", **fields):
+        if event_sink is None:
+            return
+        payload = {
+            "type": "trace_event",
+            "trace_id": trace_id,
+            "event": event,
+            "level": level,
+            "timestamp": self._trace_timestamp(),
+            "message": message,
+        }
+        for key, value in fields.items():
+            payload[key] = self._sanitize_trace_value(value, key=key)
+        try:
+            event_sink(payload)
+        except Exception as e:
+            print(f"[trace:{trace_id}] trace_sink_error {e}")
+
     def _run_tool_calls(self, context, user_input: str = ""):
         return self._run_tool_loop(context)
 
-    def _run_tool_loop(self, context, max_tool_rounds: int = 5):
+    def _run_tool_loop(self, context, max_tool_rounds: int = 5, event_sink=None, trace_id: Optional[str] = None):
         tools_schema = [t.to_dict() for t in self.tools.get_all_tools()]
         if not tools_schema:
             return None
@@ -1082,8 +1167,19 @@ class EchoAgent:
 
         try:
             import json
+            import time
             available_tools = ", ".join(tool.name for tool in self.tools.get_all_tools())
             for round_index in range(max_tool_rounds):
+                llm_start = time.monotonic()
+                self._emit_trace(
+                    event_sink,
+                    trace_id or "",
+                    "llm_request",
+                    message="Requesting model tool decision",
+                    model=getattr(config, "PRIMARY_MODEL_NAME", ""),
+                    round=round_index + 1,
+                    mode="tools",
+                )
                 tool_call_result = self.llm.chat_completion_with_tools(
                     tool_context,
                     tools=tools_schema,
@@ -1093,6 +1189,16 @@ class EchoAgent:
                     return None
 
                 tool_calls = list(getattr(tool_call_result, 'tool_calls', None) or [])
+                self._emit_trace(
+                    event_sink,
+                    trace_id or "",
+                    "llm_response",
+                    message="Model tool decision received",
+                    model=getattr(config, "PRIMARY_MODEL_NAME", ""),
+                    round=round_index + 1,
+                    tool_calls_count=len(tool_calls),
+                    elapsed_ms=int((time.monotonic() - llm_start) * 1000),
+                )
                 if not tool_calls:
                     return {
                         "tool_calls": total_tool_calls,
@@ -1110,6 +1216,17 @@ class EchoAgent:
                     kwargs, arg_error = self._parse_tool_arguments(raw_arguments)
                     call_id = getattr(tool_call, "id", "") or f"call_{round_index}_{call_index}"
                     tool_instance = self.tools.get_tool(function_name)
+                    self._emit_trace(
+                        event_sink,
+                        trace_id or "",
+                        "tool_call",
+                        message=f"{function_name} call requested",
+                        tool=function_name,
+                        action=self._tool_action(function_name),
+                        round=round_index + 1,
+                        tool_call_id=call_id,
+                        arguments=kwargs if kwargs is not None else raw_arguments,
+                    )
 
                     if tool_instance is None:
                         result = f"工具 {function_name} 不存在。可用工具：{available_tools}"
@@ -1130,6 +1247,15 @@ class EchoAgent:
                             error_type = "execution_exception"
 
                     tool_payload = self._build_tool_payload(function_name, kwargs, result, ok, error_type)
+                    trace_tool_payload = {key: value for key, value in tool_payload.items() if key != "message"}
+                    self._emit_trace(
+                        event_sink,
+                        trace_id or "",
+                        "tool_result",
+                        level="info" if ok else "error",
+                        message=tool_payload.get("message", ""),
+                        **trace_tool_payload,
+                    )
                     tool_context.append({
                         "role": "tool",
                         "tool_call_id": call_id,
@@ -1151,6 +1277,16 @@ class EchoAgent:
                 "content": "工具调用轮次已达到上限。请停止调用工具，基于已有工具结果用自然语言向用户说明当前状态和下一步建议。"
             })
 
+            self._emit_trace(
+                event_sink,
+                trace_id or "",
+                "tool_loop_limit",
+                level="error",
+                message="Tool loop reached max rounds",
+                max_tool_rounds=max_tool_rounds,
+                tool_calls=total_tool_calls,
+            )
+
             return {
                 "tool_calls": total_tool_calls,
                 "executed_tools": executed_tools,
@@ -1158,6 +1294,14 @@ class EchoAgent:
             }
         except Exception as e:
             print(f"Tool loop failed: {e}")
+            self._emit_trace(
+                event_sink,
+                trace_id or "",
+                "error",
+                level="error",
+                message=f"Tool loop failed: {str(e)}",
+                error_type="tool_loop_exception",
+            )
             return {
                 "tool_calls": 0,
                 "executed_tools": [],

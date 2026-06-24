@@ -84,6 +84,10 @@
                     handlers.onUserInput?.(data.content);
                     return;
                 }
+                if (data.type === 'trace_event') {
+                    handlers.onTraceEvent?.(data);
+                    return;
+                }
                 if (data.type === 'chunk') {
                     if (!chunkActive) {
                         chunkActive = true;

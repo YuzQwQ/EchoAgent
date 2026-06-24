@@ -1,6 +1,6 @@
 {
   "name": "echo-agent-root",
-  "version": "0.0.1",
+  "version": "0.2.0",
   "description": "Echo Agent - Root Workspace",
   "private": true,
   "scripts": {

@@ -16,6 +16,8 @@
         micBtn: document.getElementById('mic-btn'),
         observerBtn: document.getElementById('observer-btn'),
         motionBtn: document.getElementById('motion-btn'),
+        recentHistoryBtn: document.getElementById('recent-history-btn'),
+        workbenchBtn: document.getElementById('workbench-btn'),
         ttsBtn: document.getElementById('tts-btn'),
         settingsBtn: document.getElementById('settings-btn'),
         closeBtn: document.getElementById('close-btn'),
@@ -35,7 +37,23 @@
         saveSettingsBtn: document.getElementById('save-settings-btn'),
         cancelSettingsBtn: document.getElementById('cancel-settings-btn'),
         chatSection: document.getElementById('chat-section'),
-        chatContainer: document.getElementById('chat-container')
+        chatContainer: document.getElementById('chat-container'),
+        tracePanel: document.getElementById('trace-panel'),
+        traceList: document.getElementById('trace-list'),
+        traceDebugToggle: document.getElementById('trace-debug-toggle'),
+        copyTraceBtn: document.getElementById('copy-trace-btn'),
+        detachTraceBtn: document.getElementById('detach-trace-btn'),
+        clearTraceBtn: document.getElementById('clear-trace-btn'),
+        traceResizer: document.getElementById('trace-resizer'),
+        messageInput: document.getElementById('message-input'),
+        sendBtn: document.getElementById('send-btn'),
+        inputArea: document.getElementById('input-area'),
+        copyTurnBtn: document.getElementById('copy-turn-btn'),
+        clearWorkbenchHistoryBtn: document.getElementById('clear-workbench-history-btn'),
+        closeWorkbenchBtn: document.getElementById('close-workbench-btn'),
+        recentHistoryPanel: document.getElementById('recent-history-panel'),
+        recentHistoryList: document.getElementById('recent-history-list'),
+        closeRecentHistoryBtn: document.getElementById('close-recent-history-btn')
     };
 
     window.dom = dom;
