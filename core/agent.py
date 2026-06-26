@@ -46,7 +46,8 @@ class EchoAgent:
             CopyToClipboardTool,
             ReadClipboardTool,
             ListWindowsTool,
-            ScreenshotWindowTool
+            ScreenshotWindowTool,
+            ObserveWindowTool
         )
         self.tools.register(VisionCapabilityTool())
         self.tools.register(TTSCapabilityTool())
@@ -62,6 +63,7 @@ class EchoAgent:
         self.tools.register(ReadClipboardTool())
         self.tools.register(ListWindowsTool())
         self.tools.register(ScreenshotWindowTool())
+        self.tools.register(ObserveWindowTool())
 
     def refresh_runtime_resources(self):
         """Rebuild workspace-bound resources after runtime config changes."""
@@ -1029,6 +1031,7 @@ class EchoAgent:
             "read_clipboard": "read",
             "list_windows": "list",
             "screenshot_window": "screenshot",
+            "observe_window": "observe",
             "GetCurrentTime": "read",
             "ProjectHistory": "read",
         }

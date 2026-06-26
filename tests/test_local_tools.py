@@ -14,6 +14,7 @@ from core.tools.system_tools import (
     CopyToClipboardTool,
     CreateTextFileTool,
     ListWindowsTool,
+    ObserveWindowTool,
     ReadClipboardTool,
     ReadTextFileTool,
     ScreenshotWindowTool,
@@ -444,6 +445,48 @@ class WindowToolTests(unittest.TestCase):
     def test_screenshot_window_requires_title(self):
         result = ScreenshotWindowTool().execute()
         self.assertIn("缺少 window_title", result)
+
+    def test_observe_window_requires_title(self):
+        result = ObserveWindowTool().execute()
+        self.assertIn("window_title", result)
+
+    def test_observe_window_reports_screenshot_failure(self):
+        with mock.patch.object(ScreenshotWindowTool, "execute", return_value="【窗口截图失败】missing window"):
+            result = ObserveWindowTool().execute(window_title="Missing")
+        self.assertIn("窗口观察失败", result)
+        self.assertIn("截图阶段失败", result)
+
+    def test_observe_window_screenshots_then_calls_vision(self):
+        temp_dir = tempfile.mkdtemp()
+        try:
+            image_path = os.path.join(temp_dir, "window.png")
+            from PIL import Image
+            Image.new("RGB", (12, 8), color=(20, 30, 40)).save(image_path, "PNG")
+
+            screenshot_result = f"【窗口截图成功】Demo Window\n保存路径：{image_path}"
+            with mock.patch.object(ScreenshotWindowTool, "execute", return_value=screenshot_result) as screenshot_mock:
+                with mock.patch("core.vision_service.VisionService") as vision_cls:
+                    vision_cls.return_value.analyze_image.return_value = '{"description":"demo window","category":"NOTICE"}'
+
+                    result = ObserveWindowTool().execute(
+                        window_title="Demo",
+                        mode="observer",
+                        context="General"
+                    )
+
+            self.assertIn("窗口观察成功", result)
+            self.assertIn("Demo Window", result)
+            self.assertIn(image_path, result)
+            self.assertIn("demo window", result)
+            screenshot_mock.assert_called_once_with(window_title="Demo")
+
+            call_args = vision_cls.return_value.analyze_image.call_args
+            self.assertGreater(len(call_args.args[0]), 0)
+            self.assertEqual("image/png", call_args.args[1])
+            self.assertEqual("observer", call_args.kwargs["mode"])
+            self.assertEqual({"name": "General"}, call_args.kwargs["game_context"])
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 if __name__ == "__main__":

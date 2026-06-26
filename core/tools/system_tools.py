@@ -484,6 +484,7 @@ class ScreenshotWindowTool(BaseTool):
             import win32gui
             import win32ui
             import win32con
+            import ctypes
             from PIL import Image
 
             hwnd, matched_title = self._find_window(title_query)
@@ -504,9 +505,9 @@ class ScreenshotWindowTool(BaseTool):
             save_dc.SelectObject(bitmap)
 
             try:
-                result = win32gui.PrintWindow(hwnd, save_dc.GetSafeHdc(), 3)
+                result = ctypes.windll.user32.PrintWindow(hwnd, save_dc.GetSafeHdc(), 3)
                 if result != 1:
-                    result = win32gui.PrintWindow(hwnd, save_dc.GetSafeHdc(), 0)
+                    result = ctypes.windll.user32.PrintWindow(hwnd, save_dc.GetSafeHdc(), 0)
                 if result != 1:
                     return f"【窗口截图失败】系统未能捕获窗口：{matched_title}"
 
@@ -536,3 +537,114 @@ class ScreenshotWindowTool(BaseTool):
             return "【窗口截图失败】当前环境不支持窗口截图（需要 Windows + pywin32 + Pillow）。"
         except Exception as e:
             return f"【窗口截图失败】{str(e)}"
+
+
+class ObserveWindowTool(BaseTool):
+    def __init__(self):
+        description = (
+            "观察指定 Windows 可见窗口：先截取窗口 PNG，再调用视觉模型分析窗口状态。"
+            "必须提供 window_title；按标题包含关系匹配第一个可见窗口。"
+            "适合回答某个窗口当前正在显示什么、状态是否异常、游戏/应用画面发生了什么。"
+        )
+        super().__init__("observe_window", description)
+
+    def to_dict(self):
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "window_title": {
+                            "type": "string",
+                            "description": "要观察的窗口标题关键字"
+                        },
+                        "mode": {
+                            "type": "string",
+                            "enum": ["observer", "chat"],
+                            "description": "observer 返回结构化状态判断；chat 返回普通图片描述。默认 observer。"
+                        },
+                        "context": {
+                            "type": "string",
+                            "description": "观察场景上下文，例如 General、Terraria 或具体游戏/应用名。默认 General。"
+                        }
+                    },
+                    "required": ["window_title"]
+                }
+            }
+        }
+
+    def _extract_screenshot_path(self, screenshot_result: str):
+        if not isinstance(screenshot_result, str):
+            return None
+        for line in screenshot_result.splitlines():
+            cleaned = line.strip()
+            if "保存路径" in cleaned:
+                path_part = cleaned.split("保存路径", 1)[1].strip()
+                return path_part.lstrip(":：").strip()
+            if cleaned.lower().endswith(".png") and (":\\" in cleaned or cleaned.startswith("\\\\")):
+                return cleaned
+        return None
+
+    def _extract_window_title(self, screenshot_result: str, fallback: str):
+        if not isinstance(screenshot_result, str):
+            return fallback
+        first_line = screenshot_result.splitlines()[0].strip() if screenshot_result.splitlines() else ""
+        if "】" in first_line:
+            title = first_line.split("】", 1)[1].strip()
+            if title:
+                return title
+        return fallback
+
+    def execute(self, window_title: str = "", mode: str = "observer", context: str = "General", **kwargs):
+        title_query = (window_title or "").strip()
+        if not title_query:
+            return "【窗口观察失败】缺少 window_title；观察窗口必须指定明确的窗口标题关键字。"
+
+        observe_mode = (mode or "observer").strip().lower()
+        if observe_mode not in ("observer", "chat"):
+            observe_mode = "observer"
+        context_name = (context or "General").strip() or "General"
+
+        screenshot_result = ScreenshotWindowTool().execute(window_title=title_query)
+        if not isinstance(screenshot_result, str) or "失败" in screenshot_result:
+            return f"【窗口观察失败】截图阶段失败：{screenshot_result}"
+
+        screenshot_path = self._extract_screenshot_path(screenshot_result)
+        matched_title = self._extract_window_title(screenshot_result, title_query)
+        if not screenshot_path or not os.path.exists(screenshot_path):
+            return f"【窗口观察失败】截图已执行，但无法找到截图文件路径。\n截图结果：{screenshot_result}"
+
+        try:
+            from core.vision_service import VisionService
+
+            with open(screenshot_path, "rb") as image_file:
+                image_bytes = image_file.read()
+
+            vision = VisionService()
+            game_context = {"name": context_name} if observe_mode == "observer" else None
+            analysis = vision.analyze_image(
+                image_bytes,
+                "image/png",
+                mode=observe_mode,
+                game_context=game_context
+            )
+
+            if not analysis:
+                return f"【窗口观察失败】视觉模型没有返回分析结果。\n窗口：{matched_title}\n截图路径：{screenshot_path}"
+            if isinstance(analysis, str) and ("失败" in analysis or "API Key" in analysis):
+                return f"【窗口观察失败】视觉识别失败：{analysis}\n窗口：{matched_title}\n截图路径：{screenshot_path}"
+
+            return (
+                f"【窗口观察成功】{matched_title}\n"
+                f"截图路径：{screenshot_path}\n"
+                f"观察模式：{observe_mode}\n"
+                f"场景上下文：{context_name}\n"
+                f"视觉结果：\n{analysis}"
+            )
+        except ImportError:
+            return "【窗口观察失败】当前环境不支持窗口观察（需要 Windows + pywin32 + Pillow + 视觉模型依赖）。"
+        except Exception as e:
+            return f"【窗口观察失败】{str(e)}"
